@@ -1,0 +1,19 @@
+{
+  "openclaw": {
+    "enabled": true,
+    "command": "wsl -d Ubuntu-24.04 /home/andre/.npm-global/bin/openclaw"
+  },
+  "audio": {
+    "playback": {
+      "device_index": 17
+    },
+    "processing": {
+      "aec": {
+        "enabled": true,
+        "playback_source": "loopback",
+        "loopback_backend": "wasapi",
+        "loopback_device_index": 27
+      }
+    }
+  }
+}

@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Iterable, Tuple
+
+import torch
+
+try:  # pragma: no cover - import availability depends on environment
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+except Exception:  # pragma: no cover - import availability depends on environment
+    AutoModelForSequenceClassification = None
+    AutoTokenizer = None
+
+from core.config import cfg
+
+log = logging.getLogger(__name__)
+
+
+class SpeechGateMode(str, Enum):
+    STANDBY = "standby"
+    MUTE = "mute"
+    NORMAL = "normal"
+    CHATTY = "chatty"
+
+    @classmethod
+    def from_value(cls, value: object) -> "SpeechGateMode":
+        text = str(value or "").strip().lower()
+        for mode in cls:
+            if mode.value == text:
+                return mode
+        return cls.NORMAL
+
+
+@dataclass
+class GateDecision:
+    allowed: bool
+    rule_score: float
+    ml_score: float
+    final_score: float
+    continuation: bool
+    reason: str
+
+
+class DirectedIntentClassifier:
+    """Wrapper around an Electra directed-speech classifier."""
+
+    def __init__(self, model_path: str, device: str = "cpu", *, max_length: int = 64) -> None:
+        if AutoTokenizer is None or AutoModelForSequenceClassification is None:
+            raise RuntimeError("transformers is not available")
+        self.model_path = model_path
+        self.device = device
+        self.max_length = max_length
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_path).to(device)
+
+    def predict_directed_prob(self, text: str) -> float:
+        encoded = self.tokenizer(
+            [text],
+            truncation=True,
+            max_length=self.max_length,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.device)
+        with torch.no_grad():
+            logits = self.model(**encoded).logits
+            probs = torch.softmax(logits, dim=-1)[0]
+        return float(probs[1].item()) if probs.numel() >= 2 else 0.0
+
+
+class SpeechDirectionGate:
+    """Two-stage gate for directed user phrases."""
+
+    def __init__(self) -> None:
+        sg_cfg = getattr(cfg, "speech_gate", object())
+        self.root_path = Path(getattr(getattr(cfg, "paths", object()), "root", Path(".")))
+
+        self.enabled = bool(getattr(sg_cfg, "enable", True))
+        self.mode = SpeechGateMode.from_value(getattr(sg_cfg, "mode", SpeechGateMode.NORMAL.value))
+        self.rules_threshold = float(getattr(sg_cfg, "rules_threshold", 0.7))
+        self.final_threshold = float(getattr(sg_cfg, "final_threshold", 0.5))
+        self.attention_window = float(getattr(sg_cfg, "attention_window_seconds", 8.0))
+        self.attention_extension = float(getattr(sg_cfg, "attention_extension_seconds", 3.0))
+
+        self.patterns = self._load_patterns(sg_cfg)
+        self._classifier: DirectedIntentClassifier | None = None
+        self._classifier_disabled = False
+        self._classifier_failed_logged = False
+        self._ml_threshold = float(getattr(getattr(sg_cfg, "model", object()), "threshold", 0.7))
+
+        self._attention_until: float = 0.0
+
+    @classmethod
+    def from_config(cls) -> "SpeechDirectionGate":
+        return cls()
+
+    def set_mode(self, mode: SpeechGateMode) -> None:
+        self.mode = mode
+
+    def reload_patterns(self) -> None:
+        sg_cfg = getattr(cfg, "speech_gate", object())
+        self.patterns = self._load_patterns(sg_cfg)
+
+    def _load_patterns(self, sg_cfg) -> dict[str, set[str]]:
+        def _as_set(values: Iterable[str] | None) -> set[str]:
+            return {str(v).strip().lower() for v in values or [] if str(v).strip()}
+
+        file_groups = self._load_patterns_from_file(getattr(sg_cfg, "patterns_file", None))
+        groups = {
+            "assistant_names": _as_set(getattr(sg_cfg, "assistant_names", None)),
+            "command_verbs": _as_set(getattr(sg_cfg, "command_verbs", None)),
+            "politeness_markers": _as_set(getattr(sg_cfg, "politeness_markers", None)),
+            "question_markers": _as_set(getattr(sg_cfg, "question_markers", None)),
+            "modal_markers": _as_set(getattr(sg_cfg, "modal_markers", None)),
+            "continuation_patterns": _as_set(getattr(sg_cfg, "continuation_patterns", None)),
+        }
+        for kind, values in file_groups.items():
+            groups.setdefault(kind, set()).update(values)
+        return {kind: values for kind, values in groups.items() if values}
+
+    def _load_patterns_from_file(self, path_str: str | None) -> dict[str, set[str]]:
+        if not path_str:
+            return {}
+
+        path = Path(path_str)
+        if not path.is_absolute():
+            path = self.root_path / path
+
+        try:
+            if not path.exists():
+                log.warning("speech_gate: patterns file not found: %s", path)
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                log.warning("speech_gate: patterns file has invalid format (dict expected): %s", path)
+                return {}
+            cleaned: dict[str, set[str]] = {}
+            for key, values in data.items():
+                if not isinstance(values, list):
+                    continue
+                normalized = {str(item).strip().lower() for item in values if str(item).strip()}
+                if normalized:
+                    cleaned[str(key)] = normalized
+            return cleaned
+        except Exception as exc:
+            log.warning("speech_gate: failed to read patterns file %s: %s", path, exc)
+            return {}
+
+    def _load_classifier(self) -> DirectedIntentClassifier:
+        if self._classifier is not None:
+            return self._classifier
+        if self._classifier_disabled:
+            raise RuntimeError("classifier disabled")
+
+        model_cfg = getattr(getattr(cfg, "speech_gate", object()), "model", object())
+        model_path = Path(str(getattr(model_cfg, "path", "models/directed-ruElectra-small-fp16")))
+        if not model_path.is_absolute():
+            model_path = self.root_path / model_path
+        if not model_path.exists():
+            self._classifier_disabled = True
+            raise FileNotFoundError(f"speech gate model path does not exist: {model_path}")
+
+        device = str(getattr(model_cfg, "device", "cpu"))
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            log.warning("speech_gate: cuda requested but unavailable, falling back to cpu")
+            device = "cpu"
+
+        max_len = int(getattr(model_cfg, "max_length", 64))
+        self._classifier = DirectedIntentClassifier(
+            str(model_path),
+            device=device,
+            max_length=max(1, max_len),
+        )
+        return self._classifier
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        cleaned = (text or "").strip().lower()
+        return re.sub(r"\s+", " ", cleaned)
+
+    @staticmethod
+    def _contains(text: str, patterns: Iterable[str]) -> bool:
+        for pattern in patterns:
+            if not pattern:
+                continue
+            if re.search(rf"\b{re.escape(pattern)}\b", text):
+                return True
+            if pattern in text:
+                return True
+        return False
+
+    def _rules_score(self, text: str) -> Tuple[float, bool]:
+        score = 0.0
+        has_name = self._contains(text, self.patterns.get("assistant_names", set()))
+        if has_name:
+            return 1.0, True
+
+        if self._contains(text, self.patterns.get("command_verbs", set())):
+            score += 0.3
+        if self._contains(text, self.patterns.get("politeness_markers", set())):
+            score += 0.1
+        if self._contains(text, self.patterns.get("question_markers", set())):
+            score += 0.2
+        if self._contains(text, self.patterns.get("modal_markers", set())):
+            score += 0.2
+        if "?" in text:
+            score += 0.1
+
+        return min(score, 1.0), has_name
+
+    def _detect_continuation(self, text: str) -> bool:
+        stripped = text.rstrip()
+        for pattern in self.patterns.get("continuation_patterns", set()):
+            if not pattern:
+                continue
+            if stripped.endswith(pattern):
+                return True
+            if re.search(rf"{re.escape(pattern)}\s*$", stripped):
+                return True
+        return False
+
+    def _extend_attention(self, now: float) -> None:
+        self._attention_until = max(self._attention_until, now) + self.attention_extension
+
+    def _activate_attention(self, now: float, continuation: bool) -> None:
+        self._attention_until = now + self.attention_window
+        if continuation:
+            self._extend_attention(now)
+
+    def should_allow(self, text: str, *, payload: dict | None = None) -> GateDecision:
+        del payload  # reserved for future context-aware gating
+
+        normalized = self._normalize(text)
+        continuation = self._detect_continuation(normalized)
+        now = time.monotonic()
+
+        if not self.enabled:
+            return GateDecision(True, 0.0, 0.0, 1.0, continuation, "disabled")
+
+        if not normalized:
+            return GateDecision(False, 0.0, 0.0, 0.0, continuation, "empty")
+
+        in_attention = self.mode == SpeechGateMode.CHATTY or now < self._attention_until
+
+        if self.mode == SpeechGateMode.STANDBY:
+            return GateDecision(False, 0.0, 0.0, 0.0, continuation, "standby")
+
+        rule_score, has_name = self._rules_score(normalized)
+
+        if in_attention:
+            if continuation:
+                self._extend_attention(now)
+            return GateDecision(True, rule_score, 1.0, 1.0, continuation, "attention")
+
+        if self.mode == SpeechGateMode.MUTE and not has_name:
+            return GateDecision(False, rule_score, 0.0, rule_score, continuation, "mute")
+
+        if rule_score >= self.rules_threshold:
+            final_score = max(rule_score, self.final_threshold)
+            self._activate_attention(now, continuation)
+            return GateDecision(True, rule_score, 1.0, final_score, continuation, "rules")
+
+        try:
+            classifier = self._load_classifier()
+            ml_score = classifier.predict_directed_prob(normalized)
+        except Exception as exc:
+            if not self._classifier_failed_logged:
+                log.warning("speech_gate: classifier unavailable, using rules-only fallback: %s", exc)
+                self._classifier_failed_logged = True
+            final_score = rule_score
+            allowed = final_score >= self.final_threshold
+            if allowed:
+                self._activate_attention(now, continuation)
+                return GateDecision(
+                    True,
+                    rule_score,
+                    0.0,
+                    final_score,
+                    continuation,
+                    "rules_fallback",
+                )
+            return GateDecision(False, rule_score, 0.0, final_score, continuation, "low_score")
+
+        ml_pass = ml_score >= self._ml_threshold
+        final_score = 0.6 * ml_score + 0.4 * rule_score
+        allowed = ml_pass and final_score >= self.final_threshold
+        if allowed:
+            self._activate_attention(now, continuation)
+            return GateDecision(True, rule_score, ml_score, final_score, continuation, "ml")
+
+        return GateDecision(False, rule_score, ml_score, final_score, continuation, "low_score")
+
+
+__all__ = ["GateDecision", "SpeechDirectionGate", "SpeechGateMode", "DirectedIntentClassifier"]

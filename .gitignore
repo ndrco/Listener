@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.log
+
+# Virtual envs
+.venv/
+env/
+venv/
+
+# Model weights / datasets
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.weights
+*.h5
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.jpg
+*.png
+
+# YOLO / training outputs
+runs/
+datasets/
+outputs/
+checkpoints/
+models/
+
+# IDE configs
+.vscode/
+.idea/
+.codex/
+
+# Data bases
+/data/*
+/ollama_chat_ui/data/
+
+# Caches
+/cache/*

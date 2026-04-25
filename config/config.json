@@ -1,0 +1,198 @@
+﻿{
+  "version": "1.0",
+  "name": "Listener Config",
+  "description": "Configuration for Listener voice input runtime",
+  "author": "NDRCo",
+  "license": "MIT",
+  "debug": false,
+  "info": true,
+  "preview_width": 960,
+  "openclaw": {
+    "enabled": true,
+    "command": "openclaw",
+    "source_topic": "llm/speaker_phrase",
+    "session_key": "main",
+    "include_metadata": false,
+    "include_emotion": false,
+    "gateway_url": null,
+    "gateway_token": null,
+    "call_timeout_s": 12.0
+  },
+  "speech_gate": {
+    "enable": true,
+    "mode": "normal",
+    "rules_threshold": 0.7,
+    "final_threshold": 0.5,
+    "attention_window_seconds": 10.0,
+    "attention_extension_seconds": 5.0,
+    "patterns_file": "config/speech_gate_patterns.json",
+    "assistant_names": [
+      "кисса",
+      "киса"
+    ],
+    "command_verbs": [
+      "включи",
+      "скажи"
+    ],
+    "politeness_markers": [
+      "пожалуйста"
+    ],
+    "question_markers": [
+      "как",
+      "зачем"
+    ],
+    "modal_markers": [
+      "можешь"
+    ],
+    "continuation_patterns": [
+      "и ещё",
+      "а также"
+    ],
+    "model": {
+      "path": "models/directed-ruElectra-small-fp16",
+      "device": "cpu",
+      "threshold": 0.7,
+      "max_length": 64
+    }
+  },
+  "events": {
+    "audio": {
+      "raw_frame": "audio/raw_frame",
+      "processed_frame": "audio/processed_frame",
+      "voice_activity": "audio/voice_activity",
+      "playback_frame": "audio/playback_frame",
+      "stt_partial": "audio/stt/partial",
+      "stt_final": "audio/stt/final"
+    },
+    "llm": {
+      "input_text": "llm/input_text",
+      "speaker_phrase": "llm/speaker_phrase"
+    },
+    "app": {
+      "stop": "app/stop"
+    }
+  },
+  "audio": {
+    "input": {
+      "input_sample_rate": 48000,
+      "output_sample_rate": 16000,
+      "chunk_size": 4800,
+      "channels": 1,
+      "device_index": null
+    },
+    "playback": {
+      "enabled": true,
+      "sample_rate": 48000,
+      "channels": 1,
+      "chunk_size": 4800,
+      "device_index": null,
+      "queue_maxsize": 0,
+      "volume": 1.0
+    },
+    "processing": {
+      "enabled": true,
+      "aec": {
+        "enabled": true,
+        "frame_duration_ms": 10,
+        "stream_delay_ms": 50.0,
+        "noise_suppression": true,
+        "high_pass_filter": true,
+        "auto_gain_control": true,
+        "playback_source": "loopback",
+        "loopback_backend": "auto",
+        "loopback_device_index": null,
+        "loopback_device_name_contains": null,
+        "loopback_frame_duration_ms": null
+      },
+      "highpass": {
+        "enabled": false,
+        "cutoff_hz": 100.0
+      },
+      "noise_suppression": {
+        "enabled": false,
+        "frame_duration_ms": 10,
+        "energy_threshold_ratio": 2.2,
+        "suppression_factor": 0.75,
+        "noise_learning_rate": 0.9,
+        "noise_release_rate": 0.01,
+        "gain_smoothing": 0.8,
+        "min_gain": 0.25
+      },
+      "vad": {
+        "enabled": true,
+        "pipeline": "hybrid",
+        "mode": 3,
+        "frame_duration_ms": 30,
+        "energy_threshold_db": -45.0,
+        "hangover_ms": 600,
+        "active_republish_interval_ms": 1000,
+        "model_path": "models/silero_vad_v6.jit",
+        "model_config_path": "config/silero_vad_config.json",
+        "probability_threshold": 0.3,
+        "min_speech_duration_ms": 120,
+        "min_silence_duration_ms": 800,
+        "speech_pad_ms": 200,
+        "publish_voice_activity": true,
+        "webrtc_escalation_low_threshold": 0.35,
+        "webrtc_escalation_high_threshold": 1.0,
+        "silero_cadence_ms": null,
+        "silero_min_activation_duration_ms": 60.0,
+        "silero_device": "cpu"
+      },
+      "agc": {
+        "enabled": true,
+        "target_level_dbfs": -25.0,
+        "max_gain_db": 20.0,
+        "attack_ms": 10,
+        "release_ms": 250,
+        "headroom_db": 0.8,
+        "limiter_attack_ms": 0.75,
+        "limiter_release_ms": 60.0
+      }
+    },
+    "buffer": {
+      "pre_roll_ms": 300.0,
+      "post_roll_ms": 50.0,
+      "max_silence_ms": 1000.0,
+      "max_segment_duration_ms": 30000.0,
+      "max_segment_bytes": 5242880,
+      "queue_maxsize": 0
+    },
+    "stt": {
+      "enabled": true,
+      "model": "avazir/faster-distil-whisper-large-v3-ru",
+      "device": "cpu",
+      "compute_type": "int8",
+      "download_root": "models/whisper",
+      "local_files_only": true,
+      "cpu_threads": null,
+      "num_workers": null,
+      "language": "ru",
+      "task": "transcribe",
+      "beam_size": null,
+      "best_of": null,
+      "patience": null,
+      "temperature": 0.0,
+      "temperature_increment_on_fallback": null,
+      "initial_prompt": null,
+      "condition_on_previous_text": false,
+      "compression_ratio_threshold": null,
+      "logprob_threshold": null,
+      "no_speech_threshold": null,
+      "length_penalty": null,
+      "max_initial_timestamp": null,
+      "suppress_tokens": null,
+      "suppress_blank": true,
+      "prompt_reset_on_temperature": false,
+      "vad_filter": false,
+      "vad_parameters": null,
+      "word_timestamps": false,
+      "without_timestamps": true,
+      "sample_rate": 16000,
+      "min_confidence": 0.35,
+      "stability_timeout_s": 1.2,
+      "queue_wait_s": 0.2,
+      "enable_punctuation": true
+    }
+  }
+}

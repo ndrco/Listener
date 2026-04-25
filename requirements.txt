@@ -1,0 +1,7 @@
+﻿# Core runtime dependencies for Listener
+numpy==1.26.4
+sounddevice==0.5.1
+webrtcvad==2.0.10
+torch
+faster-whisper==1.0.3
+transformers==4.41.2

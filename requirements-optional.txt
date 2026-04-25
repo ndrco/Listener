@@ -1,0 +1,9 @@
+﻿# Optional dependencies
+# Required only if you enable AEC in config/audio.processing.aec
+livekit
+
+# Test tooling
+pytest
+pytest-asyncio
+soundfile
+scipy

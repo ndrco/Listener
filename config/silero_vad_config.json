@@ -1,0 +1,22 @@
+{
+  "model_id": "silero_vad_1.1",
+  "default_device": "cpu",
+  "jit": { "type": "torchscript", "input_dtype": "float32" },
+  "pcm": {
+    "format": "PCM16LE",
+    "dtype": "int16",
+    "num_channels": 1,
+    "sample_rates": [8000, 16000, 32000, 48000],
+    "normalization_factor": 3.0517578125e-05
+  },
+  "frame": {
+    "duration_ms": 32,
+    "samples_per_rate": {
+      "8000": 256,
+      "16000": 512,
+      "32000": 1024,
+      "48000": 1536
+    }
+  },
+  "thresholds": { "speech_probability": 0.5 }
+}
