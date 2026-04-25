@@ -121,6 +121,7 @@ Far-end (playback) sources -> AEC.submit_farend():
 * `playback_source` — выбор источника far-end аудио: `event_bus` (подписка на топик из `cfg.events.audio.playback_frame`), `loopback` (автоматический захват системного звука) или `manual` для ручной передачи через `submit_playback`.
 * `loopback_backend` — backend loopback-захвата: `auto`, `wasapi`, `pipewire`, `pulse`, `sounddevice_monitor`. В `auto` Windows использует WASAPI, Linux ищет monitor/source-устройство через `sounddevice`.
 * `loopback_device_index` — индекс loopback-устройства. На Windows это устройство воспроизведения для WASAPI loopback; на Linux это input-устройство monitor/source из PipeWire/PulseAudio.
+* `loopback_source_name` — имя PipeWire/PulseAudio source для Linux loopback-захвата. Поддерживаются алиасы `@DEFAULT_MONITOR@` и `@DEFAULT_SOURCE@`.
 * `loopback_device_name_contains` — необязательная подстрока для автопоиска Linux monitor-устройства.
 * `loopback_frame_duration_ms` — размер кадра loopback-потока; если не задан, используется окно AEC.
 

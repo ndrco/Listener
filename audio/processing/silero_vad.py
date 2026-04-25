@@ -458,8 +458,11 @@ class SileroVADHelper:
             with torch.inference_mode():
                 output = self._model(self._frame_buffer.unsqueeze(0), int(sample_rate))
         except RuntimeError as exc:  # pragma: no cover - runtime guard
+            detail = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
             raise RuntimeError(
-                "Silero VAD inference failed; ensure the frame duration matches the model's expected window size."
+                "Silero VAD inference failed"
+                f" ({detail}); ensure the frame duration matches the model's expected "
+                "window size and the selected torch/CUDA runtime is available."
             ) from exc
 
         if not isinstance(output, torch.Tensor):

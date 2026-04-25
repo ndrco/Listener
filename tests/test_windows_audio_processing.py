@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 import sys
 import types
@@ -533,6 +534,91 @@ def test_windows_processor_escalates_to_silero(monkeypatch):
     assert event["silero_invocations"] == 1
     assert event["webrtc_probability"] == pytest.approx(0.5)
     assert event["vad_probability"] == pytest.approx(FakeSilero.probability)
+
+
+def test_windows_processor_disables_silero_after_predict_failure(monkeypatch, caplog):
+    bus = DummyBus()
+    cfg = make_processing_cfg(
+        enabled=True,
+        vad=AudioVadCfg(
+            enabled=True,
+            mode=2,
+            frame_duration_ms=30,
+            energy_threshold_db=-70.0,
+            min_speech_duration_ms=30,
+            min_silence_duration_ms=30,
+            speech_pad_ms=0,
+            publish_voice_activity=True,
+            model_path="fake.pt",
+            model_config_path="fake.json",
+            webrtc_escalation_low_threshold=0.25,
+            webrtc_escalation_high_threshold=0.75,
+            silero_cadence_ms=60.0,
+            silero_min_activation_duration_ms=60.0,
+        ),
+    )
+
+    FakeVad = _setup_sequence_vad(monkeypatch, [True, False])
+    from audio.processing import windows_processing
+
+    class FailingSilero:
+        calls: list[tuple[np.ndarray, int]] = []
+
+        def __init__(
+            self,
+            config: AudioProcessingCfg,
+            *,
+            debug: bool | None = None,
+        ) -> None:
+            self._config = config
+            self._debug = debug
+
+        def predict(self, pcm: np.ndarray, sample_rate: int) -> float:
+            FailingSilero.calls.append((pcm.copy(), sample_rate))
+            raise RuntimeError("libnvrtc-builtins.so.13.0 is missing")
+
+    FailingSilero.calls = []
+    monkeypatch.setattr(windows_processing, "SileroVADHelper", FailingSilero)
+    caplog.set_level(logging.WARNING, logger=windows_processing.log.name)
+
+    frame_samples = int(16000 * cfg.vad.frame_duration_ms / 1000)
+    pcm = _sine_wave(1200, frame_samples * 2)
+    frame = pcm.tobytes()
+    result: dict[str, ProcessedAudioFrame] = {}
+
+    async def runner() -> None:
+        async with WindowsAudioProcessor(
+            sample_rate=16000,
+            channels=1,
+            config=cfg,
+            bus=bus,
+            debug=False,
+        ) as proc:
+            await proc.submit(frame)
+            result["frame"] = await proc.__anext__()
+            assert proc._allow_silero is False
+            assert proc._silero_vad is None
+        with pytest.raises(StopAsyncIteration):
+            await proc.__anext__()
+
+    asyncio.run(runner())
+
+    processed = result["frame"]
+    assert isinstance(processed, ProcessedAudioFrame)
+    assert processed.voice_detected is True
+    assert processed.webrtc_probability == pytest.approx(0.5)
+    assert processed.vad_probability == pytest.approx(0.5)
+    assert processed.silero_probability == pytest.approx(0.0)
+    assert processed.silero_invocations == 0
+    assert processed.vad_total_frames == 2
+    assert processed.vad_speech_frames == 1
+
+    assert FakeVad.calls and len(FakeVad.calls) == 2
+    assert FailingSilero.calls and FailingSilero.calls[0][0].shape[0] == frame_samples * 2
+    assert any(
+        "Silero predict failed; disabling Silero VAD" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_windows_processor_uses_silero_when_webrtc_unavailable(monkeypatch):
@@ -1178,6 +1264,11 @@ def test_audio_processor_linux_auto_loopback_selects_monitor(monkeypatch):
 
     FakeAudioProcessingModule = install_fake_aec(monkeypatch)
     monkeypatch.setattr(windows_processing.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_resolve_pulse_loopback_source_name",
+        lambda self: None,
+    )
 
     class FakeSoundDevice:
         devices = [
@@ -1281,6 +1372,11 @@ def test_audio_processor_linux_loopback_uses_explicit_device_without_wasapi(monk
 
     install_fake_aec(monkeypatch)
     monkeypatch.setattr(windows_processing.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_resolve_pulse_loopback_source_name",
+        lambda self: None,
+    )
 
     class FakeSoundDevice:
         class InputStream:
@@ -1341,6 +1437,11 @@ def test_audio_processor_linux_loopback_missing_monitor_does_not_fail(monkeypatc
 
     install_fake_aec(monkeypatch)
     monkeypatch.setattr(windows_processing.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_resolve_pulse_loopback_source_name",
+        lambda self: None,
+    )
 
     class FakeSoundDevice:
         @staticmethod
@@ -1401,6 +1502,188 @@ def test_audio_processor_linux_loopback_missing_monitor_does_not_fail(monkeypatc
 
     assert not FakeSoundDevice.InputStream.created
     assert isinstance(result["frame"], ProcessedAudioFrame)
+
+
+def test_audio_processor_linux_auto_loopback_uses_pulse_source_when_available(monkeypatch):
+    from audio.processing import windows_processing
+
+    FakeAudioProcessingModule = install_fake_aec(monkeypatch)
+    monkeypatch.setattr(windows_processing.platform, "system", lambda: "Linux")
+
+    class FakePulseStream:
+        created: list["FakePulseStream"] = []
+
+        def __init__(self, *, source_name: str, blocksize: int, on_chunk) -> None:
+            self.source_name = source_name
+            self.blocksize = blocksize
+            self._on_chunk = on_chunk
+            self.started = False
+            self.stopped = False
+            self.closed = False
+            type(self).created.append(self)
+
+        def start(self) -> None:
+            self.started = True
+            data = (np.ones(self.blocksize, dtype=np.int16) * 500).tobytes()
+            self._on_chunk(data)
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    backend_loaded = {"called": False}
+
+    def _unexpected_backend(self):
+        backend_loaded["called"] = True
+        raise AssertionError("sounddevice backend should not be used when pulse source is available")
+
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_load_sounddevice_backend",
+        _unexpected_backend,
+    )
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_resolve_pulse_loopback_source_name",
+        lambda self: "alsa_output.test.monitor",
+    )
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_create_pulse_loopback_stream",
+        lambda self, *, source_name, blocksize, on_chunk: FakePulseStream(
+            source_name=source_name,
+            blocksize=blocksize,
+            on_chunk=on_chunk,
+        ),
+    )
+
+    bus = DummyBus()
+    cfg = make_processing_cfg(
+        enabled=True,
+        vad=AudioVadCfg(enabled=False, publish_voice_activity=False),
+    )
+    cfg.highpass.enabled = False
+    cfg.agc.enabled = False
+    cfg.noise_suppression.enabled = False
+    cfg.aec.enabled = True
+    cfg.aec.playback_source = "loopback"
+    cfg.aec.loopback_backend = "auto"
+    cfg.aec.loopback_device_index = None
+    cfg.aec.loopback_source_name = "@DEFAULT_MONITOR@"
+    cfg.aec.stream_delay_ms = 0.0
+
+    near_pcm = (np.ones(160, dtype=np.int16) * 2000).astype(np.int16)
+    result: dict[str, ProcessedAudioFrame] = {}
+
+    async def runner() -> None:
+        async with AudioProcessor(
+            sample_rate=16000,
+            channels=1,
+            config=cfg,
+            bus=bus,
+        ) as proc:
+            await asyncio.sleep(0)
+            await proc.submit(near_pcm.tobytes())
+            result["frame"] = await proc.__anext__()
+
+    asyncio.run(runner())
+
+    assert FakeAudioProcessingModule.created
+    assert FakeAudioProcessingModule.created[-1].reverse_calls >= 1
+    assert FakePulseStream.created
+    stream = FakePulseStream.created[-1]
+    assert stream.source_name == "alsa_output.test.monitor"
+    assert stream.started is True
+    assert stream.stopped is True
+    assert stream.closed is True
+    assert backend_loaded["called"] is False
+    processed_pcm = np.frombuffer(result["frame"].data, dtype=np.int16)
+    assert np.all(processed_pcm == near_pcm // 2)
+
+
+def test_audio_processor_loopback_queue_full_log_is_throttled(monkeypatch, caplog):
+    from audio.processing import windows_processing
+
+    install_fake_aec(monkeypatch)
+    monkeypatch.setattr(windows_processing.platform, "system", lambda: "Linux")
+
+    current_time = {"value": 0.0}
+
+    def fake_monotonic() -> float:
+        current_time["value"] += 0.05
+        return current_time["value"]
+
+    monkeypatch.setattr(windows_processing.time, "monotonic", fake_monotonic)
+
+    class BurstPulseStream:
+        def __init__(self, *, source_name: str, blocksize: int, on_chunk) -> None:
+            self.source_name = source_name
+            self.blocksize = blocksize
+            self._on_chunk = on_chunk
+
+        def start(self) -> None:
+            data = (np.ones(self.blocksize, dtype=np.int16) * 500).tobytes()
+            for _ in range(140):
+                self._on_chunk(data)
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_resolve_pulse_loopback_source_name",
+        lambda self: "alsa_output.test.monitor",
+    )
+    monkeypatch.setattr(
+        windows_processing.AudioProcessor,
+        "_create_pulse_loopback_stream",
+        lambda self, *, source_name, blocksize, on_chunk: BurstPulseStream(
+            source_name=source_name,
+            blocksize=blocksize,
+            on_chunk=on_chunk,
+        ),
+    )
+
+    caplog.set_level(logging.DEBUG, logger=windows_processing.log.name)
+
+    bus = DummyBus()
+    cfg = make_processing_cfg(
+        enabled=True,
+        vad=AudioVadCfg(enabled=False, publish_voice_activity=False),
+    )
+    cfg.highpass.enabled = False
+    cfg.agc.enabled = False
+    cfg.noise_suppression.enabled = False
+    cfg.aec.enabled = True
+    cfg.aec.playback_source = "loopback"
+    cfg.aec.loopback_backend = "auto"
+    cfg.aec.loopback_source_name = "@DEFAULT_MONITOR@"
+
+    async def runner() -> None:
+        async with AudioProcessor(
+            sample_rate=16000,
+            channels=1,
+            config=cfg,
+            bus=bus,
+            debug=True,
+        ):
+            await asyncio.sleep(0)
+
+    asyncio.run(runner())
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "dropping loopback" in record.getMessage()
+    ]
+    assert 1 <= len(messages) <= 2
+    assert all("dropping loopback frames (queue full" in message for message in messages)
+    assert any("dropped=" in message and "queued=64/64" in message for message in messages)
 
 
 def test_windows_processor_resamples_to_output_rate():

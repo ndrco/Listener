@@ -8,6 +8,9 @@ import contextlib
 import logging
 import math
 import platform
+import shutil
+import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -36,6 +39,118 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_ACTIVE_REPUBLISH_INTERVAL_MS = 250.0
+
+
+class _ParecLoopbackStream:
+    """Capture PipeWire/Pulse monitor audio via parec."""
+
+    def __init__(
+        self,
+        *,
+        source_name: str,
+        sample_rate: int,
+        channels: int,
+        blocksize: int,
+        on_chunk: Any,
+        debug: bool = False,
+    ) -> None:
+        self.source_name = str(source_name)
+        self.sample_rate = max(1, int(sample_rate))
+        self.channels = max(1, int(channels))
+        self.blocksize = max(1, int(blocksize))
+        self._on_chunk = on_chunk
+        self._debug = bool(debug)
+        self._stop_event = threading.Event()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._stdout_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_tail: list[str] = []
+
+    def start(self) -> None:
+        if shutil.which("parec") is None:
+            raise RuntimeError("parec is not available")
+        cmd = [
+            "parec",
+            "--raw",
+            "--format=s16le",
+            f"--rate={self.sample_rate}",
+            f"--channels={self.channels}",
+            f"--device={self.source_name}",
+            "--latency-msec=20",
+        ]
+        self._proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self._stdout_thread = threading.Thread(
+            target=self._read_stdout,
+            name="ParecLoopback.stdout",
+            daemon=True,
+        )
+        self._stderr_thread = threading.Thread(
+            target=self._read_stderr,
+            name="ParecLoopback.stderr",
+            daemon=True,
+        )
+        self._stdout_thread.start()
+        self._stderr_thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1.0)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        self.stop()
+
+    def error_tail(self) -> str:
+        return "\n".join(self._stderr_tail[-6:]).strip()
+
+    def _read_stdout(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        chunk_bytes = self.blocksize * self.channels * 2
+        while not self._stop_event.is_set():
+            data = proc.stdout.read(chunk_bytes)
+            if not data:
+                break
+            if len(data) % 2:
+                data = data[:-1]
+            if data:
+                self._on_chunk(data)
+
+    def _read_stderr(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        for raw_line in iter(proc.stderr.readline, b""):
+            if self._stop_event.is_set():
+                break
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            self._stderr_tail.append(line)
+            if len(self._stderr_tail) > 20:
+                self._stderr_tail = self._stderr_tail[-20:]
+            if self._debug:
+                log.debug("audio.processing: parec stderr: %s", line)
 
 
 @dataclass(slots=True)
@@ -137,6 +252,8 @@ class AudioProcessor:
         self._aec_loopback_stream: Any | None = None
         self._aec_loopback_task: asyncio.Task[None] | None = None
         self._aec_loopback_queue: "asyncio.Queue[bytes]" | None = None
+        self._aec_loopback_dropped_frames: int = 0
+        self._aec_loopback_last_drop_log_ts: float = 0.0
         self._sounddevice_backend: Any | None = None
         self._sounddevice_backend_error: bool = False
         self._vad_tail = bytearray()
@@ -496,6 +613,7 @@ class AudioProcessor:
             playback_source=playback_source,
             loopback_backend=str(getattr(cfg_aec, "loopback_backend", "auto") or "auto"),
             loopback_device_index=getattr(cfg_aec, "loopback_device_index", None),
+            loopback_source_name=getattr(cfg_aec, "loopback_source_name", None),
             loopback_device_name_contains=getattr(
                 cfg_aec, "loopback_device_name_contains", None
             ),
@@ -558,6 +676,7 @@ class AudioProcessor:
         elif playback_source == "loopback":
             self._aec_loopback_params = {
                 "device_index": getattr(cfg_aec, "loopback_device_index", None),
+                "source_name": getattr(cfg_aec, "loopback_source_name", None),
                 "backend": getattr(cfg_aec, "loopback_backend", "auto"),
                 "device_name_contains": getattr(
                     cfg_aec, "loopback_device_name_contains", None
@@ -599,10 +718,6 @@ class AudioProcessor:
             return
         if self._aec_loopback_task is not None:
             return
-
-        backend = self._load_sounddevice_backend()
-        if backend is None:
-            return
         loopback_backend = self._resolve_loopback_backend(
             self._aec_loopback_params.get("backend")
         )
@@ -610,6 +725,8 @@ class AudioProcessor:
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=64)
         self._aec_loopback_queue = queue
+        self._aec_loopback_dropped_frames = 0
+        self._aec_loopback_last_drop_log_ts = 0.0
 
         frame_ms = self._aec_loopback_params.get("frame_duration_ms")
         if frame_ms is None:
@@ -625,6 +742,63 @@ class AudioProcessor:
             blocksize = int(self.input_sample_rate * self.channels / 100)
         if blocksize <= 0:
             blocksize = 1024
+
+        def _safe_put(chunk: bytes) -> None:
+            try:
+                queue.put_nowait(chunk)
+            except asyncio.QueueFull:
+                self._note_loopback_queue_full(queue)
+
+        async def _drain() -> None:
+            try:
+                while self._running and self._aec is not None:
+                    data = await queue.get()
+                    if data is None:
+                        break
+                    self.submit_playback(data)
+            except asyncio.CancelledError:  # pragma: no cover - cancellation is expected
+                pass
+
+        if self._should_prefer_pulse_loopback(loopback_backend):
+            pulse_source = self._resolve_pulse_loopback_source_name()
+            if pulse_source:
+                try:
+                    stream = self._create_pulse_loopback_stream(
+                        source_name=pulse_source,
+                        blocksize=blocksize,
+                        on_chunk=lambda data: loop.call_soon_threadsafe(_safe_put, data),
+                    )
+                    start_method = getattr(stream, "start", None)
+                    if callable(start_method):
+                        start_method()
+                except Exception:
+                    if self._debug:
+                        log.exception(
+                            "audio.processing: failed to start Pulse/PipeWire loopback source"
+                        )
+                    else:
+                        log.warning(
+                            "audio.processing: failed to start Pulse/PipeWire loopback source",
+                            exc_info=False,
+                        )
+                else:
+                    self._aec_loopback_stream = stream
+                    self._aec_loopback_task = asyncio.create_task(
+                        _drain(), name="AudioProcessingLoopback"
+                    )
+                    log.info(
+                        "audio.processing: AEC loopback capture started "
+                        "(backend=pulse, source=%s, sample_rate=%d, blocksize=%d)",
+                        pulse_source,
+                        self.input_sample_rate,
+                        blocksize,
+                    )
+                    return
+
+        backend = self._load_sounddevice_backend()
+        if backend is None:
+            self._aec_loopback_queue = None
+            return
 
         device_index = self._aec_loopback_params.get("device_index")
         if device_index is None and loopback_backend in {
@@ -662,13 +836,6 @@ class AudioProcessor:
             self._aec_loopback_queue = None
             return
 
-        def _safe_put(chunk: bytes) -> None:
-            try:
-                queue.put_nowait(chunk)
-            except asyncio.QueueFull:
-                if self._debug:
-                    log.debug("audio.processing: dropping loopback frame (queue full)")
-        
         def _callback(indata, frames, _time, status) -> None:
             if not self._running or self._aec is None:
                 return
@@ -744,18 +911,17 @@ class AudioProcessor:
 
         self._aec_loopback_stream = stream
 
-        async def _drain() -> None:
-            try:
-                while self._running and self._aec is not None:
-                    data = await queue.get()
-                    if data is None:
-                        break
-                    self.submit_playback(data)
-            except asyncio.CancelledError:  # pragma: no cover - cancellation is expected
-                pass
-
         self._aec_loopback_task = asyncio.create_task(
             _drain(), name="AudioProcessingLoopback"
+        )
+        device_desc = self._describe_sounddevice_device(backend, device_index)
+        log.info(
+            "audio.processing: AEC loopback capture started "
+            "(backend=%s, device=%s, sample_rate=%d, blocksize=%d)",
+            loopback_backend,
+            device_desc,
+            self.input_sample_rate,
+            blocksize,
         )
 
     async def _stop_aec_loopback_capture(self) -> None:
@@ -804,6 +970,180 @@ class AudioProcessor:
         if system == "linux":
             return "sounddevice_monitor"
         return "sounddevice_monitor"
+
+    def _should_prefer_pulse_loopback(self, loopback_backend: str) -> bool:
+        system = platform.system().strip().lower()
+        if system != "linux":
+            return False
+        if loopback_backend == "wasapi":
+            return False
+        explicit_source = self._aec_loopback_params.get("source_name")
+        if explicit_source not in ("", None):
+            return True
+        explicit_device_index = self._aec_loopback_params.get("device_index")
+        if explicit_device_index is not None and loopback_backend == "sounddevice_monitor":
+            return False
+        return loopback_backend in {"pulse", "pipewire", "sounddevice_monitor"}
+
+    def _create_pulse_loopback_stream(
+        self,
+        *,
+        source_name: str,
+        blocksize: int,
+        on_chunk: Any,
+    ) -> Any:
+        return _ParecLoopbackStream(
+            source_name=source_name,
+            sample_rate=self.input_sample_rate,
+            channels=self.channels,
+            blocksize=blocksize,
+            on_chunk=on_chunk,
+            debug=self._debug,
+        )
+
+    def _resolve_pulse_loopback_source_name(self) -> str | None:
+        explicit_source = self._aec_loopback_params.get("source_name")
+        if explicit_source not in ("", None):
+            return self._resolve_pulse_source_alias(str(explicit_source))
+
+        name_contains = self._aec_loopback_params.get("device_name_contains")
+        if name_contains not in ("", None):
+            return self._find_pulse_monitor_source(name_contains=str(name_contains))
+
+        return self._resolve_pulse_source_alias("@DEFAULT_MONITOR@")
+
+    def _resolve_pulse_source_alias(self, source_name: str) -> str | None:
+        source = str(source_name or "").strip()
+        if not source:
+            return None
+        if source == "@DEFAULT_SOURCE@":
+            return self._run_pactl("get-default-source")
+        if source != "@DEFAULT_MONITOR@":
+            return source
+
+        default_sink = self._run_pactl("get-default-sink")
+        sources = self._query_pulse_sources()
+        names = {source["name"] for source in sources}
+        if default_sink:
+            candidate = f"{default_sink}.monitor"
+            if not names or candidate in names:
+                return candidate
+        monitors = [source["name"] for source in sources if source["is_monitor"]]
+        if monitors:
+            return monitors[0]
+        return None
+
+    def _find_pulse_monitor_source(self, *, name_contains: str) -> str | None:
+        sources = self._query_pulse_sources()
+        if not sources:
+            return None
+        default_sink = self._run_pactl("get-default-sink")
+        default_monitor = f"{default_sink}.monitor" if default_sink else None
+        needle = str(name_contains or "").strip().lower()
+        matches: list[tuple[int, str]] = []
+        for source in sources:
+            if not source["is_monitor"]:
+                continue
+            name = source["name"]
+            haystack = f"{name} {source['driver']} {source['state']}".lower()
+            if needle and needle not in haystack:
+                continue
+            score = 0
+            if name == default_monitor:
+                score += 100
+            if source["state"] == "RUNNING":
+                score += 20
+            if needle:
+                score += 20
+            if "monitor" in haystack:
+                score += 10
+            matches.append((score, name))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: (-item[0], item[1]))
+        return matches[0][1]
+
+    def _query_pulse_sources(self) -> list[dict[str, str | bool]]:
+        output = self._run_pactl("list", "sources", "short")
+        if not output:
+            return []
+        sources: list[dict[str, str | bool]] = []
+        for line in output.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 5:
+                continue
+            _index, name, driver, sample_spec, state = parts[:5]
+            sources.append(
+                {
+                    "name": name,
+                    "driver": driver,
+                    "sample_spec": sample_spec,
+                    "state": state,
+                    "is_monitor": ".monitor" in name.lower(),
+                }
+            )
+        return sources
+
+    def _run_pactl(self, *args: str) -> str | None:
+        if shutil.which("pactl") is None:
+            return None
+        try:
+            proc = subprocess.run(
+                ["pactl", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        text = proc.stdout.strip()
+        return text or None
+
+    def _describe_sounddevice_device(self, backend: Any, device_index: object) -> str:
+        if device_index is None:
+            return "default"
+        try:
+            index = int(device_index)
+        except Exception:
+            return str(device_index)
+        try:
+            devices = list(backend.query_devices())
+        except Exception:
+            return str(index)
+        if index < 0 or index >= len(devices):
+            return str(index)
+        info = devices[index]
+        if not isinstance(info, dict):
+            return str(index)
+        name = str(info.get("name", "") or "").strip()
+        if not name:
+            return str(index)
+        return f"{index}:{name}"
+
+    def _note_loopback_queue_full(self, queue: "asyncio.Queue[bytes]") -> None:
+        if not self._debug:
+            return
+        self._aec_loopback_dropped_frames += 1
+        now = time.monotonic()
+        last = self._aec_loopback_last_drop_log_ts
+        if last <= 0.0:
+            self._aec_loopback_last_drop_log_ts = now
+            return
+        if now - last < 2.0:
+            return
+        dropped = self._aec_loopback_dropped_frames
+        self._aec_loopback_dropped_frames = 0
+        self._aec_loopback_last_drop_log_ts = now
+        log.debug(
+            "audio.processing: dropping loopback frames "
+            "(queue full, dropped=%d, queued=%d/%d)",
+            dropped,
+            queue.qsize(),
+            queue.maxsize,
+        )
 
     def _find_loopback_monitor_device(
         self,
@@ -1298,9 +1638,25 @@ class AudioProcessor:
                     silero_probability = float(silero_helper.predict(pcm_batch, sample_rate))
                     self._silero_last_probability = silero_probability
                     silero_invocations = 1
-                except Exception:
-                    log.exception("audio.processing: Silero predict failed; resetting pending audio")
-                    silero_probability = float(self._silero_last_probability) if self._silero_last_probability else 0.0
+                except Exception as exc:
+                    if self._debug:
+                        log.exception(
+                            "audio.processing: Silero predict failed; disabling Silero VAD "
+                            "for this processor and falling back to WebRTC when available"
+                        )
+                    else:
+                        log.warning(
+                            "audio.processing: Silero predict failed; disabling Silero VAD "
+                            "for this processor and falling back to WebRTC when available (%s)",
+                            exc,
+                            exc_info=False,
+                        )
+                    self._silero_vad = None
+                    self._allow_silero = False
+                    silero_helper = None
+                    use_silero = False
+                    self._silero_last_probability = 0.0
+                    silero_probability = 0.0
                 finally:                
                     self._silero_pending_audio.clear()
                     self._silero_pending_ms = 0.0

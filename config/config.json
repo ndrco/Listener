@@ -4,7 +4,7 @@
   "description": "Configuration for Listener voice input runtime",
   "author": "NDRCo",
   "license": "MIT",
-  "debug": false,
+  "debug": true,
   "info": true,
   "preview_width": 960,
   "openclaw": {
@@ -27,9 +27,9 @@
     "attention_extension_seconds": 5.0,
     "patterns_file": "config/speech_gate_patterns.json",
     "assistant_names": [
-      "кисса",
-      "киса"
-    ],
+      "ассистент",
+      "помощник"
+     ],
     "command_verbs": [
       "включи",
       "скажи"
@@ -50,7 +50,7 @@
     ],
     "model": {
       "path": "models/directed-ruElectra-small-fp16",
-      "device": "cpu",
+      "device": "cuda",
       "threshold": 0.7,
       "max_length": 64
     }
@@ -101,6 +101,7 @@
         "playback_source": "loopback",
         "loopback_backend": "auto",
         "loopback_device_index": null,
+        "loopback_source_name": "@DEFAULT_MONITOR@",
         "loopback_device_name_contains": null,
         "loopback_frame_duration_ms": null
       },
@@ -161,7 +162,7 @@
     "stt": {
       "enabled": true,
       "model": "avazir/faster-distil-whisper-large-v3-ru",
-      "device": "cpu",
+      "device": "cuda",
       "compute_type": "int8",
       "download_root": "models/whisper",
       "local_files_only": true,

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from typing import Any, Awaitable, Callable, Dict, Iterable
 
@@ -63,8 +64,8 @@ class WhisperStreamingTranscriber:
         self._writer = writer
         self._bus = bus or default_bus
 
-        base_cfg = stt_config or cfg.audio.stt
-        runtime_base = StreamingTranscriberConfig.from_whisper_cfg(base_cfg)
+        self._stt_config = stt_config or cfg.audio.stt
+        runtime_base = StreamingTranscriberConfig.from_whisper_cfg(self._stt_config)
         if runtime_config is None:
             self._runtime = runtime_base
         else:
@@ -74,8 +75,9 @@ class WhisperStreamingTranscriber:
             }
             self._runtime = replace(runtime_base, **overrides)
 
-        engine_debug = bool(cfg.debug) if debug is None else bool(debug)
-        self._engine = WhisperEngine(base_cfg, debug=engine_debug)
+        self._engine_debug = bool(cfg.debug) if debug is None else bool(debug)
+        self._engine: WhisperEngine | None = None
+        self._executor: ThreadPoolExecutor | None = None
 
         self._llm_queue: "asyncio.Queue[str]" = asyncio.Queue(maxsize=llm_queue_maxsize)
         self._on_final = on_final
@@ -96,6 +98,7 @@ class WhisperStreamingTranscriber:
     async def start(self) -> None:
         if self._running:
             return
+        await self._ensure_engine()
         self._running = True
         self._task = asyncio.create_task(self._run(), name="WhisperStreamingTranscriber")
 
@@ -109,6 +112,7 @@ class WhisperStreamingTranscriber:
                 pass
             self._task = None
         await self._flush_pending(reason="shutdown")
+        self._shutdown_executor()
 
     async def __aenter__(self) -> "WhisperStreamingTranscriber":  # pragma: no cover - convenience
         await self.start()
@@ -125,6 +129,46 @@ class WhisperStreamingTranscriber:
         """Queue with final transcripts for downstream LLM pipeline."""
 
         return self._llm_queue
+
+    async def _ensure_engine(self) -> None:
+        if self._engine is not None:
+            return
+        executor = self._ensure_executor()
+        loop = asyncio.get_running_loop()
+        try:
+            self._engine = await loop.run_in_executor(executor, self._create_engine)
+        except Exception:
+            self._shutdown_executor()
+            raise
+
+    def _ensure_executor(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="WhisperSTT",
+            )
+        return self._executor
+
+    def _shutdown_executor(self) -> None:
+        executor = self._executor
+        self._executor = None
+        self._engine = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _create_engine(self) -> WhisperEngine:
+        return WhisperEngine(self._stt_config, debug=self._engine_debug)
+
+    async def _transcribe_in_executor(self, data: bytes, *, sample_rate: int) -> list[str]:
+        engine = self._engine
+        if engine is None:
+            raise RuntimeError("audio.stt.streaming: Whisper engine is not initialised")
+        executor = self._ensure_executor()
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            executor,
+            lambda: engine.transcribe(data, sample_rate=sample_rate),
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -150,7 +194,28 @@ class WhisperStreamingTranscriber:
         metadata = self._build_metadata(segment)
         self._current_metadata = metadata
         self._current_audio = segment.data
-        results = self._engine.transcribe(segment.data, sample_rate=segment.sample_rate)
+        try:
+            results = await self._transcribe_in_executor(
+                segment.data,
+                sample_rate=segment.sample_rate,
+            )
+        except Exception:
+            log.exception(
+                "audio.stt.streaming: transcription failed for segment #%d "
+                "(duration=%.2fs, sample_rate=%d, bytes=%d, model=%s, device=%s, "
+                "compute_type=%s)",
+                self._segment_index,
+                segment.duration_ms / 1000.0,
+                segment.sample_rate,
+                len(segment.data),
+                getattr(self._stt_config, "model", None),
+                getattr(self._stt_config, "device", None),
+                getattr(self._stt_config, "compute_type", None),
+            )
+            self._reset_state()
+            return
+        if not self._running:
+            return
 
         if not results:
             log.debug(

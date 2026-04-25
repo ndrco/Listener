@@ -22,6 +22,23 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _resolve_project_path(value: object, root: Path) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        path = Path(str(value).strip()).expanduser()
+    except Exception:
+        return None
+    if not str(path):
+        return None
+    if not path.is_absolute():
+        path = root / path
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
 def _apply_event_topics(section: dict[str, Any], cfg_obj: Any) -> None:
     for field_info in getattr(cfg_obj, "__dataclass_fields__", {}).values():
         name = field_info.name
@@ -203,6 +220,7 @@ class AcousticEchoCancellationCfg:
     playback_source: str = "event_bus"
     loopback_backend: str = "auto"
     loopback_device_index: int | None = None
+    loopback_source_name: str | None = None
     loopback_device_name_contains: str | None = None
     loopback_frame_duration_ms: int | None = None
 
@@ -507,10 +525,7 @@ def load(path: str | None = None) -> None:
                 patterns_file_value = speech_gate_section.get(
                     "patterns_file", sg_cfg.patterns_file
                 )
-                if patterns_file_value in ("", None):
-                    sg_cfg.patterns_file = None
-                else:
-                    sg_cfg.patterns_file = str(patterns_file_value)
+                sg_cfg.patterns_file = _resolve_project_path(patterns_file_value, root)
 
             def _clean_str_list(value: object, current: list[str]) -> list[str]:
                 if isinstance(value, list):
@@ -551,7 +566,12 @@ def load(path: str | None = None) -> None:
             model_cfg = sg_cfg.model
             if model_section:
                 if "path" in model_section:
-                    model_cfg.path = str(model_section.get("path", model_cfg.path))
+                    model_path = _resolve_project_path(
+                        model_section.get("path", model_cfg.path),
+                        root,
+                    )
+                    if model_path is not None:
+                        model_cfg.path = model_path
                 if "device" in model_section:
                     model_cfg.device = str(model_section.get("device", model_cfg.device))
                 try:
@@ -707,18 +727,12 @@ def load(path: str | None = None) -> None:
         )
 
         model_path_value = vad_section.get("model_path", vad_cfg.model_path)
-        if model_path_value in ("", None):
-            vad_cfg.model_path = None
-        else:
-            vad_cfg.model_path = str(model_path_value)
+        vad_cfg.model_path = _resolve_project_path(model_path_value, root)
 
         model_cfg_value = vad_section.get(
             "model_config_path", vad_cfg.model_config_path
         )
-        if model_cfg_value in ("", None):
-            vad_cfg.model_config_path = None
-        else:
-            vad_cfg.model_config_path = str(model_cfg_value)
+        vad_cfg.model_config_path = _resolve_project_path(model_cfg_value, root)
 
         probability_source = vad_section.get(
             "probability_threshold", vad_cfg.probability_threshold
@@ -881,6 +895,18 @@ def load(path: str | None = None) -> None:
                 # Conversion error: keep current value.
                 pass
         aec_cfg.loopback_device_index = lbi_clean
+        source_raw = aec.get(
+            "loopback_source_name",
+            aec_cfg.loopback_source_name,
+        )
+        if source_raw in ("", None):
+            aec_cfg.loopback_source_name = None
+        else:
+            try:
+                source_clean = str(source_raw).strip()
+            except Exception:
+                source_clean = ""
+            aec_cfg.loopback_source_name = source_clean or None
         name_raw = aec.get(
             "loopback_device_name_contains",
             aec_cfg.loopback_device_name_contains,
@@ -1086,10 +1112,7 @@ def load(path: str | None = None) -> None:
         )
 
         model_path_value = speaker_section.get("model_path", speaker_cfg.model_path)
-        if model_path_value in (None, ""):
-            speaker_cfg.model_path = None
-        else:
-            speaker_cfg.model_path = str(model_path_value)
+        speaker_cfg.model_path = _resolve_project_path(model_path_value, root)
 
         device_value = speaker_section.get("device", speaker_cfg.device)
         if device_value in (None, ""):
@@ -1176,14 +1199,23 @@ def load(path: str | None = None) -> None:
             except (TypeError, ValueError):
                 return current
 
-        stt_cfg.model = _clean_required_string(stt_section.get("model", stt_cfg.model), stt_cfg.model)
+        stt_model_value = _clean_required_string(
+            stt_section.get("model", stt_cfg.model),
+            stt_cfg.model,
+        )
+        stt_model_path = _resolve_project_path(stt_model_value, root)
+        if stt_model_path is not None and Path(stt_model_path).exists():
+            stt_cfg.model = stt_model_path
+        else:
+            stt_cfg.model = stt_model_value
         stt_cfg.device = _clean_optional_string(stt_section.get("device", stt_cfg.device), stt_cfg.device)
         stt_cfg.compute_type = _clean_optional_string(
             stt_section.get("compute_type", stt_cfg.compute_type), stt_cfg.compute_type
         )
-        stt_cfg.download_root = _clean_optional_string(
+        stt_download_root = _clean_optional_string(
             stt_section.get("download_root", stt_cfg.download_root), stt_cfg.download_root
         )
+        stt_cfg.download_root = _resolve_project_path(stt_download_root, root)
         stt_cfg.local_files_only = _parse_bool(
             stt_section.get("local_files_only", stt_cfg.local_files_only), stt_cfg.local_files_only
         )

@@ -23,6 +23,36 @@ SAVE_SECONDS = 3.0   # duration of saved fragment on 'S'
 # Queue for audio blocks.
 q_audio = queue.Queue()
 
+
+class DisplayIntegrator:
+    """Time-based EMA smoother for displayed metrics."""
+
+    def __init__(self, tau_seconds: float = 0.0) -> None:
+        self.tau_seconds = max(0.0, float(tau_seconds or 0.0))
+        self._values: dict[str, float] = {}
+        self._times: dict[str, float] = {}
+
+    def enabled(self) -> bool:
+        return self.tau_seconds > 0.0
+
+    def update(self, key: str, value: float, now: float | None = None) -> float:
+        value_f = float(value)
+        if self.tau_seconds <= 0.0:
+            return value_f
+        ts = time.time() if now is None else float(now)
+        prev = self._values.get(key)
+        prev_ts = self._times.get(key)
+        if prev is None or prev_ts is None:
+            self._values[key] = value_f
+            self._times[key] = ts
+            return value_f
+        dt = max(0.0, ts - prev_ts)
+        alpha = 1.0 if dt <= 0.0 else 1.0 - np.exp(-dt / self.tau_seconds)
+        smoothed = prev + alpha * (value_f - prev)
+        self._values[key] = float(smoothed)
+        self._times[key] = ts
+        return float(smoothed)
+
 def dbfs_from_signal(xi: np.ndarray):
     # xi: int16 [-32768..32767]
     x = xi.astype(np.float32) / REF_FULL_SCALE
@@ -350,6 +380,32 @@ def _create_aec_canceller(args, sample_rate: int):
     )
 
 
+def _integrated_metrics(
+    integrator: DisplayIntegrator,
+    *,
+    now: float,
+    far_rms: float,
+    raw_rms: float,
+    clean_rms: float,
+    raw_peak: float,
+    clean_peak: float,
+) -> tuple[float, float, float, float, float, float]:
+    far_disp = integrator.update("far_rms", far_rms, now=now)
+    raw_disp = integrator.update("raw_rms", raw_rms, now=now)
+    clean_disp = integrator.update("clean_rms", clean_rms, now=now)
+    raw_peak_disp = integrator.update("raw_peak", raw_peak, now=now)
+    clean_peak_disp = integrator.update("clean_peak", clean_peak, now=now)
+    reduction_disp = raw_disp - clean_disp
+    return (
+        far_disp,
+        raw_disp,
+        clean_disp,
+        raw_peak_disp,
+        clean_peak_disp,
+        reduction_disp,
+    )
+
+
 def _run_live_aec_pulse(args, sample_rate: int, block_size: int) -> int:
     if block_size <= 0:
         block_size = max(1, int(sample_rate * max(1, int(args.aec_frame_ms)) / 1000))
@@ -376,8 +432,12 @@ def _run_live_aec_pulse(args, sample_rate: int, block_size: int) -> int:
     print(f"- Sample rate: {sample_rate} Hz")
     print(f"- Block size: {block_size}")
     print(f"- AEC frame: {args.aec_frame_ms} ms")
-    print(f"- AEC delay hint: {args.aec_delay_ms} ms\n")
+    print(f"- AEC delay hint: {args.aec_delay_ms} ms")
+    if args.integrate_seconds > 0:
+        print(f"- Display integration: EMA {args.integrate_seconds:.2f} s")
+    print()
 
+    integrator = DisplayIntegrator(args.integrate_seconds)
     far_hist: list[float] = []
     raw_hist: list[float] = []
     clean_hist: list[float] = []
@@ -453,16 +513,31 @@ def _run_live_aec_pulse(args, sample_rate: int, block_size: int) -> int:
                 raw_med = float(np.median(raw_hist))
                 clean_med = float(np.median(clean_hist))
                 far_med = float(np.median(far_hist)) if far_hist else -120.0
-                reduction = raw_med - clean_med
 
                 now = time.time()
                 if now - last_print >= 0.1:
                     last_print = now
-                    bar = make_bar(clean_med)
+                    (
+                        far_disp,
+                        raw_disp,
+                        clean_disp,
+                        raw_peak_disp,
+                        clean_peak_disp,
+                        reduction_disp,
+                    ) = _integrated_metrics(
+                        integrator,
+                        now=now,
+                        far_rms=far_med,
+                        raw_rms=raw_med,
+                        clean_rms=clean_med,
+                        raw_peak=raw_peak,
+                        clean_peak=clean_peak,
+                    )
+                    bar = make_bar(clean_disp)
                     line = (
-                        f"\rFar {far_med:6.1f} dBFS | Raw {raw_med:6.1f} dBFS | Clean {clean_med:6.1f} dBFS "
-                        f"| Echo red {reduction:5.1f} dB | "
-                        f"RawPk {raw_peak:6.1f} | ClnPk {clean_peak:6.1f} | {bar}"
+                        f"\rFar {far_disp:6.1f} dBFS | Raw {raw_disp:6.1f} dBFS | Clean {clean_disp:6.1f} dBFS "
+                        f"| Echo red {reduction_disp:5.1f} dB | "
+                        f"RawPk {raw_peak_disp:6.1f} | ClnPk {clean_peak_disp:6.1f} | {bar}"
                     )
                     print(line, end="", flush=True)
     except Exception as exc:
@@ -522,8 +597,12 @@ def _run_live_aec(args, sd, sample_rate: int, block_size: int) -> int:
     print(f"- Mic block size: {block_size}")
     print(f"- Loopback block size: {loopback_block_size}")
     print(f"- AEC frame: {args.aec_frame_ms} ms")
-    print(f"- AEC delay hint: {args.aec_delay_ms} ms\n")
+    print(f"- AEC delay hint: {args.aec_delay_ms} ms")
+    if args.integrate_seconds > 0:
+        print(f"- Display integration: EMA {args.integrate_seconds:.2f} s")
+    print()
 
+    integrator = DisplayIntegrator(args.integrate_seconds)
     far_hist: list[float] = []
     raw_hist: list[float] = []
     clean_hist: list[float] = []
@@ -577,16 +656,31 @@ def _run_live_aec(args, sd, sample_rate: int, block_size: int) -> int:
                 raw_med = float(np.median(raw_hist))
                 clean_med = float(np.median(clean_hist))
                 far_med = float(np.median(far_hist)) if far_hist else -120.0
-                reduction = raw_med - clean_med
 
                 now = time.time()
                 if now - last_print >= 0.1:
                     last_print = now
-                    bar = make_bar(clean_med)
+                    (
+                        far_disp,
+                        raw_disp,
+                        clean_disp,
+                        raw_peak_disp,
+                        clean_peak_disp,
+                        reduction_disp,
+                    ) = _integrated_metrics(
+                        integrator,
+                        now=now,
+                        far_rms=far_med,
+                        raw_rms=raw_med,
+                        clean_rms=clean_med,
+                        raw_peak=raw_peak,
+                        clean_peak=clean_peak,
+                    )
+                    bar = make_bar(clean_disp)
                     line = (
-                        f"\rFar {far_med:6.1f} dBFS | Raw {raw_med:6.1f} dBFS | Clean {clean_med:6.1f} dBFS "
-                        f"| Echo red {reduction:5.1f} dB | "
-                        f"RawPk {raw_peak:6.1f} | ClnPk {clean_peak:6.1f} | {bar}"
+                        f"\rFar {far_disp:6.1f} dBFS | Raw {raw_disp:6.1f} dBFS | Clean {clean_disp:6.1f} dBFS "
+                        f"| Echo red {reduction_disp:5.1f} dB | "
+                        f"RawPk {raw_peak_disp:6.1f} | ClnPk {clean_peak_disp:6.1f} | {bar}"
                     )
                     print(line, end="", flush=True)
     except Exception as exc:
@@ -642,6 +736,12 @@ def main(argv=None):
     )
     parser.add_argument("--aec-delay-ms", type=int, default=80, help="AEC stream delay hint in milliseconds.")
     parser.add_argument("--aec-frame-ms", type=int, default=10, help="AEC frame duration in milliseconds.")
+    parser.add_argument(
+        "--integrate-seconds",
+        type=float,
+        default=0.0,
+        help="EMA integration time for displayed indicators in seconds; 0 disables smoothing.",
+    )
     parser.add_argument("--aec-noise-suppression", action="store_true", help="Enable LiveKit APM noise suppression in AEC mode.")
     parser.add_argument("--aec-high-pass-filter", action="store_true", help="Enable LiveKit APM high-pass filter in AEC mode.")
     parser.add_argument("--aec-auto-gain", action="store_true", help="Enable LiveKit APM auto gain in AEC mode.")
@@ -675,7 +775,10 @@ def main(argv=None):
     print("- If you have multiple devices, choose one via sd.default.device = (input_id, None)\n")
     print(f"- Device: {'default' if args.device is None else args.device}")
     print(f"- Sample rate: {sample_rate} Hz")
-    print(f"- Block size: {block_size}\n")
+    print(f"- Block size: {block_size}")
+    if args.integrate_seconds > 0:
+        print(f"- Display integration: EMA {args.integrate_seconds:.2f} s")
+    print()
 
     # Device list hint.
     try:
@@ -695,6 +798,7 @@ def main(argv=None):
 
     # Smooth median filter for RMS.
     rms_hist = []
+    integrator = DisplayIntegrator(args.integrate_seconds)
 
     stream_kwargs = dict(
         channels=CH,
@@ -729,10 +833,12 @@ def main(argv=None):
             now = time.time()
             if now - last_print >= 0.1:
                 last_print = now
-                bar = make_bar(rms_med)
+                rms_disp = integrator.update("rms", rms_med, now=now)
+                peak_disp = integrator.update("peak", peak_db, now=now)
+                bar = make_bar(rms_disp)
                 # Crest factor (peak - RMS), indicator of compression/AGC.
-                crest = peak_db - rms_med
-                line = f"\rRMS {rms_med:6.1f} dBFS  |  Peak {peak_db:6.1f} dBFS  |  Crest {crest:4.1f} dB  | {bar}"
+                crest = peak_disp - rms_disp
+                line = f"\rRMS {rms_disp:6.1f} dBFS  |  Peak {peak_disp:6.1f} dBFS  |  Crest {crest:4.1f} dB  | {bar}"
                 print(line, end='', flush=True)
 
     print("\nExit. Bye.")

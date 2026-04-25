@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - faster-whisper is optional at runtime
 
 log = logging.getLogger(__name__)
 _BLACKLIST_SPACE_RE = re.compile(r"\s+")
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class WhisperEngine:
@@ -50,7 +51,7 @@ class WhisperEngine:
             )
 
         cfg = self._config
-        model_name = cfg.model or "small"
+        model_name = self._resolve_model_name(cfg.model or "small")
 
         init_kwargs: Dict[str, Any] = {
             "device": cfg.device or "auto",
@@ -95,6 +96,19 @@ class WhisperEngine:
             init_kwargs.get("device"),
             init_kwargs.get("compute_type", "default"),
         )
+
+    @staticmethod
+    def _resolve_model_name(model_name: str) -> str:
+        text = str(model_name or "").strip() or "small"
+        path = Path(text).expanduser()
+        candidates = [path] if path.is_absolute() else [Path.cwd() / path, _PROJECT_ROOT / path]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return str(candidate.resolve())
+            except OSError:
+                continue
+        return text
 
     # ------------------------------------------------------------------
     # Public API

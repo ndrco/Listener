@@ -31,6 +31,7 @@ class AcousticEchoCancellationSettings:
     playback_source: str = "event_bus"
     loopback_backend: str = "auto"
     loopback_device_index: int | None = None
+    loopback_source_name: str | None = None
     loopback_device_name_contains: str | None = None
     loopback_frame_duration_ms: int | None = None
 
