@@ -34,10 +34,11 @@ $LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py speech-gate 
 
 ## Intent Mapping
 
-- "режим разговора", "слушай все", "можно без обращения по имени" -> `chatty --ttl 600` unless the user gives a duration.
-- "тихий режим", "реагируй только на имя" -> `mute`.
-- "не слушай", "уйди в standby", "режим ожидания" -> `standby --ttl 300` unless the user gives a duration.
-- "обычный режим", "вернись", "слушай нормально" -> `normal`.
+- Conversation mode, listen to everything, no wake name required, active listening on -> `chatty --ttl 600` unless the user gives a duration.
+- Quiet mode, name-only mode, stop listening to background speech, active listening off -> `mute`.
+- Do not listen, stop listening completely, standby mode, go to standby -> `standby --ttl 300` unless the user gives a duration.
+- Normal mode, come back, listen normally, leave active listening mode -> `normal`.
+- If the user asks about listening activity/status, run `speech-gate status` first and report the current mode.
 
 After changing mode, run `speech-gate status` and summarize the resulting mode
 briefly. Do not use `standby` without `--ttl`.

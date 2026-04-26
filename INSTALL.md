@@ -196,13 +196,33 @@ EOF
 ```
 
 Run the command from the Listener repository root so `LISTENER_HOME` is written
-as the current project path. After that, OpenClaw can use the
-`listener-control` skill for phrases like:
+as the current project path.
 
-- "включи режим разговора" -> `chatty --ttl 600`
-- "тихий режим" -> `mute`
-- "не слушай пять минут" -> `standby --ttl 300`
-- "вернись в обычный режим" -> `normal`
+Optionally add a short persistent note to OpenClaw `AGENTS.md` so the agent
+recognizes that some chat messages may arrive from Listener as voice
+transcripts:
+
+```bash
+OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
+cat >> "$OPENCLAW_WORKSPACE/AGENTS.md" <<'EOF'
+
+## Listener Voice Input
+
+Some messages may come from Listener as voice transcripts through OpenClaw
+chat.send. When the user asks to change listening behavior, use the
+listener-control skill: chatty for conversation mode, mute for name-only mode,
+standby only with TTL, and normal to return to default filtering.
+EOF
+```
+
+After that, OpenClaw can use the `listener-control` skill for phrases like:
+
+- "turn on conversation mode" -> `chatty --ttl 600`
+- "quiet mode" -> `mute`
+- "do not listen for five minutes" -> `standby --ttl 300`
+- "return to normal listening" -> `normal`
+- "turn active listening on" -> `chatty --ttl 600`
+- "turn active listening off" -> `mute`
 
 Listener also reads OpenClaw assistant identity from the OpenClaw workspace
 `IDENTITY.md` automatically. Supported keys are `Name:` and `Имя:`.

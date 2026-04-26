@@ -119,6 +119,23 @@ EOF
 Run the command from the Listener repository root so `LISTENER_HOME` is written
 as the current project path.
 
+Optionally add a short persistent note to OpenClaw `AGENTS.md` so the agent
+recognizes that some chat messages may arrive from Listener as voice
+transcripts:
+
+```bash
+OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
+cat >> "$OPENCLAW_WORKSPACE/AGENTS.md" <<'EOF'
+
+## Listener Voice Input
+
+Some messages may come from Listener as voice transcripts through OpenClaw
+chat.send. When the user asks to change listening behavior, use the
+listener-control skill: chatty for conversation mode, mute for name-only mode,
+standby only with TTL, and normal to return to default filtering.
+EOF
+```
+
 ## Manual `listenerctl` Commands
 
 ```bash
