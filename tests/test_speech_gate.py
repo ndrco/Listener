@@ -99,6 +99,32 @@ def test_speech_gate_fallback_drops_weak_phrase_without_model():
     assert decision.final_score == pytest.approx(0.0)
 
 
+def test_speech_gate_modes_keep_expected_behavior():
+    gate = _build_gate()
+
+    gate.set_mode(SpeechGateMode.CHATTY)
+    assert gate.should_allow("просто фраза").allowed is True
+
+    gate.set_mode(SpeechGateMode.MUTE)
+    assert gate.should_allow("просто фраза").reason == "mute"
+    assert gate.should_allow("Kissa, привет").allowed is True
+
+    gate.set_mode(SpeechGateMode.STANDBY)
+    decision = gate.should_allow("Kissa, привет")
+    assert decision.allowed is False
+    assert decision.reason == "standby"
+
+
+def test_speech_gate_mode_override_uses_segment_time_mode():
+    gate = _build_gate()
+    gate.set_mode(SpeechGateMode.NORMAL)
+
+    decision = gate.should_allow("не профильная фраза", mode=SpeechGateMode.CHATTY)
+
+    assert decision.allowed is True
+    assert decision.reason == "attention"
+
+
 def test_speech_gate_loads_assistant_name_from_openclaw_identity(tmp_path):
     identity_path = tmp_path / ".openclaw" / "workspace" / "IDENTITY.md"
     identity_path.parent.mkdir(parents=True)
@@ -243,9 +269,127 @@ def test_speech_gate_agent_publishes_filtered_topic():
             cfg.speech_gate.patterns_file = old_patterns_file
             cfg.speech_gate.identity_file = old_identity_file
 
-        assert any(topic == "llm/speaker_phrase" for topic, _ in bus.events)
-        published_payload = [payload for topic, payload in bus.events if topic == "llm/speaker_phrase"][0]
+        assert any(topic == "llm/accepted_phrase" for topic, _ in bus.events)
+        published_payload = [payload for topic, payload in bus.events if topic == "llm/accepted_phrase"][0]
         assert published_payload["text"] == "Привет, kissa"
         assert "speech_gate_reason" in published_payload
+
+    asyncio.run(_runner())
+
+
+def test_speech_gate_agent_runtime_mode_control():
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        try:
+            bus = DummyBus()
+            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            await agent.start()
+            try:
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Привет, kissa"})
+                )
+                await agent.set_mode("mute", source="test", reason="clear attention")
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "подробности"})
+                )
+                assert len(bus.events) == 1
+                assert agent.get_status()["mode"] == "mute"
+
+                with pytest.raises(ValueError):
+                    await agent.set_mode("standby")
+
+                await agent.set_mode("chatty", ttl_seconds=0.05, source="test")
+                assert agent.get_status()["mode"] == "chatty"
+                await asyncio.sleep(0.08)
+                status = agent.get_status()
+                assert status["mode"] == "mute"
+                assert status["temporary"] is False
+
+                await agent.set_mode("normal")
+                assert agent.get_status()["mode"] == "normal"
+            finally:
+                await agent.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+
+    asyncio.run(_runner())
+
+
+def test_speech_gate_agent_uses_mode_active_at_segment_start():
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        try:
+            bus = DummyBus()
+            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            await agent.start()
+            try:
+                await agent.set_mode("chatty", ttl_seconds=0.05, source="test")
+                segment_start = agent.get_status()["changed_at"] + 0.01
+                await asyncio.sleep(0.08)
+                assert agent.get_status()["mode"] == "normal"
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(
+                        topic="llm/input_text",
+                        payload={
+                            "text": "не профильная фраза",
+                            "start_timestamp": segment_start,
+                        },
+                    )
+                )
+            finally:
+                await agent.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+
+        assert len(bus.events) == 1
+        payload = bus.events[0][1]
+        assert payload["speech_gate_reason"] == "attention"
 
     asyncio.run(_runner())

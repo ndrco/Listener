@@ -1,4 +1,4 @@
-"""Forward speaker phrases into OpenClaw chat via CLI gateway calls."""
+"""Forward accepted voice phrases into OpenClaw chat via CLI gateway calls."""
 
 from __future__ import annotations
 
@@ -211,29 +211,7 @@ class OpenClawInputAgent:
     def _build_message(self, payload: dict[str, Any]) -> str:
         raw_text = payload.get("text")
         text = " ".join(str(raw_text or "").split())
-        if not text:
-            return ""
-
-        if not bool(getattr(cfg.openclaw, "include_metadata", False)):
-            return text
-
-        speaker_name = str(payload.get("speaker_name") or "").strip()
-        if not speaker_name or speaker_name.lower() == "unknown":
-            return text
-
-        confirmed = bool(payload.get("speaker_user_id"))
-        prefix = (
-            f"Speaker: {speaker_name}"
-            if confirmed
-            else f"Speaker (estimated): {speaker_name}"
-        )
-
-        if bool(getattr(cfg.openclaw, "include_emotion", True)):
-            emotion = str(payload.get("emotion") or "").strip()
-            if emotion:
-                prefix = f"{prefix} (emotion={emotion})"
-
-        return f"{prefix}\nText: {text}"
+        return text
 
     async def _drain_queue(self) -> None:
         while not self._queue.empty():

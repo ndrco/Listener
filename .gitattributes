@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.flac binary
+*.mp3 binary
+*.mp4 binary
+*.mov binary
+*.mkv binary
+*.zip binary
+*.tar binary
+*.tar.gz binary
+*.7z binary

@@ -1,218 +1,239 @@
 # Listener
 
-`Listener` это локальный voice-input runtime: он захватывает звук с микрофона, прогоняет его через обработку, режет на речевые сегменты, распознаёт речь через Whisper, фильтрует реплики по направленности и при необходимости отправляет результат в OpenClaw.
+`Listener` is a local voice-input runtime for OpenClaw. It captures microphone
+audio, applies audio processing/VAD/AEC, transcribes speech with Whisper, filters
+phrases by directed-speech rules, and forwards accepted text to OpenClaw.
 
-Проект построен вокруг шины событий и трёх основных агентов:
+The project is Linux-first, with Windows compatibility kept through the
+platform-specific sample config in `config/config.windows.example.json`.
 
-- `AudioAgent` запускает микрофон, обработку аудио, буферизацию речи и STT.
-- `SpeechGateAgent` решает, действительно ли фраза адресована ассистенту.
-- `OpenClawInputAgent` пересылает прошедшие фразы в `openclaw gateway call chat.send`.
+## Features
 
-Базовая конфигурация лежит в [config/config.json](config/config.json).
+- Microphone capture through `sounddevice`.
+- Linux PipeWire/PulseAudio loopback for AEC monitor sources.
+- Windows WASAPI loopback compatibility.
+- LiveKit AEC, optional NS/HPF/AGC, custom noise suppression and VAD.
+- Hybrid VAD pipeline: WebRTC + Silero.
+- Whisper STT through `faster-whisper`.
+- SpeechGate filtering with assistant name loaded from OpenClaw `IDENTITY.md`.
+- Runtime SpeechGate control API and `utils/listenerctl.py`.
+- Bundled OpenClaw workspace skill: `openclaw/skills/listener-control`.
 
-## Пайплайн
+## Pipeline
 
 ```text
 Microphone -> AudioProcessor -> BufferedSpeechWriter -> WhisperStreamingTranscriber
-           -> llm/input_text -> SpeechGateAgent -> llm/speaker_phrase
+           -> llm/input_text -> SpeechGateAgent -> llm/accepted_phrase
            -> OpenClawInputAgent -> OpenClaw
 ```
 
-Внутри `AudioProcessor` сигнал может проходить через:
+Core modules:
 
-- AEC
-- ресемплинг
-- high-pass / DC blocking
-- noise suppression
-- VAD
-- AGC
+- `agents/` - runtime orchestration.
+- `audio/` - microphone, processing, buffering and STT.
+- `core/` - config, event bus and logging.
+- `llm/` - SpeechGate directed-speech logic.
+- `utils/` - diagnostics and control CLI.
+- `openclaw/skills/` - OpenClaw workspace skill bundle.
 
-Подробности по устройству подсистемы есть в [docs/audio.md](docs/audio.md) и [docs/stt.md](docs/stt.md).
+## Quick Start
 
-## Быстрый старт
-
-Создать локальное окружение и установить зависимости:
+See [INSTALL.md](INSTALL.md) for the full setup guide.
 
 ```bash
-python3 -m venv .venv
+git clone <repository-url>
+cd Listener
+python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install -r requirements-optional.txt
-```
-
-Запустить приложение:
-
-```bash
+python utils/silero_vad_model_downloader.py
+python utils/list_devices.py
 python main.py
 ```
 
-Запустить тесты:
+In another terminal:
 
 ```bash
-pytest -q
+curl -s http://127.0.0.1:18790/ | jq
+.venv/bin/python utils/listenerctl.py speech-gate status
 ```
 
-## Конфигурация
+## Configuration
 
-Основные настройки рантайма находятся в `config/config.json`.
+Main runtime settings live in `config/config.json`.
 
-Самые важные секции:
+Important sections:
 
-- `audio.input`: частота дискретизации, каналы, размер блока и индекс микрофона.
-- `audio.processing`: AEC, VAD, AGC, high-pass и шумоподавление.
-- `audio.buffer`: буферизация речевых сегментов перед STT.
-- `audio.stt`: модель Whisper и параметры декодирования.
-- `speech_gate`: правила и ML-гейт направленности речи.
-- `openclaw`: параметры отправки финальных реплик в OpenClaw.
-- `events`: топики внутренней шины событий.
+- `control` - local runtime HTTP API for SpeechGate mode control.
+- `openclaw` - OpenClaw CLI/gateway forwarding settings.
+- `speech_gate` - directed-speech rules, identity file and classifier settings.
+- `audio.input` - microphone sample rate, channels, chunk size and device.
+- `audio.processing` - AEC, VAD, AGC, high-pass and noise suppression.
+- `audio.buffer` - speech segment buffering before STT.
+- `audio.stt` - Whisper model and decoding settings.
+- `events` - internal EventBus topic names.
 
-Windows-ориентированный пример вынесен в [config/config.windows.example.json](config/config.windows.example.json).
+The default `requirements.txt` is tuned for CUDA 12.8 PyTorch. For CPU-only
+machines, set `audio.stt.device="cpu"` and `speech_gate.model.device="cpu"` in
+`config/config.json`.
 
-## Модели
+## Models
 
-Код ожидает наличие путей к моделям в конфиге, но сами веса не должны храниться в исходниках.
+Model weights are intentionally not tracked in git.
 
-По умолчанию используются такие пути:
+Default expected paths:
 
-- `audio.processing.vad.model_path`: `models/silero_vad_v6.jit`
-- `speech_gate.model.path`: `models/directed-ruElectra-small-fp16`
-- `audio.stt.model`: `avazir/faster-distil-whisper-large-v3-ru`
-- `audio.stt.download_root`: `models/whisper`
-- `audio.stt.local_files_only`: `true`
+- `models/silero_vad_v6.jit`
+- `models/directed-ruElectra-small-fp16`
+- `models/whisper`
 
-Последний флаг особенно важен: при `local_files_only=true` Whisper не будет автоматически скачивать веса. Для чистого клона есть три варианта:
-
-1. Положить модель Whisper в `models/whisper`.
-2. Временно переключить `audio.stt.local_files_only` в `false`.
-3. Временно отключить STT через `audio.stt.enabled=false`.
-
-Silero VAD можно скачать так:
+Download Silero VAD:
 
 ```bash
-python utils/silero_vad_model_downloader.py
+.venv/bin/python utils/silero_vad_model_downloader.py
 ```
 
-## Linux
+For Whisper, either place a local snapshot under `models/whisper`, temporarily
+set `audio.stt.local_files_only=false`, or disable STT while testing the rest of
+the pipeline.
 
-На Linux поддерживаются:
+## Linux Audio Setup
 
-- захват микрофона
-- обработка аудио
-- VAD
-- Whisper STT
-- speech gate
-- отправка в OpenClaw
-- диагностика AEC и loopback
-
-Показать устройства:
+List devices:
 
 ```bash
-python utils/list_devices.py
+.venv/bin/python utils/list_devices.py
 ```
 
-Показать monitor-источники для loopback/AEC:
+List PipeWire/PulseAudio monitor sources for loopback/AEC:
 
 ```bash
-python utils/list_devices.py --monitors
+.venv/bin/python utils/list_devices.py --monitors
 ```
 
-`utils/list_devices.py` выводит две разные картины:
-
-- устройства, видимые через `sounddevice`
-- реальные PipeWire/Pulse sources, полученные через `pactl`
-
-Это важно, потому что на Linux PipeWire может удерживать raw ALSA-устройство, и тогда микрофон физически существует в системе, но в `sounddevice` не виден как отдельный input.
-
-Для runtime Linux loopback/AEC настраивается через:
-
-- `audio.processing.aec.playback_source = "loopback"`
-- `audio.processing.aec.loopback_backend = "auto"` или `pulse` / `pipewire`
-- `audio.processing.aec.loopback_device_index`
-- `audio.processing.aec.loopback_source_name`
-- `audio.processing.aec.loopback_device_name_contains`
-
-Если monitor/source не найден, приложение продолжит работу без loopback-захвата и запишет warning в лог.
-
-Для OpenClaw на Linux обычно достаточно:
+Recommended Linux AEC defaults:
 
 ```json
 {
-  "openclaw": {
-    "enabled": true,
-    "command": "openclaw"
+  "audio": {
+    "processing": {
+      "aec": {
+        "enabled": true,
+        "playback_source": "loopback",
+        "loopback_backend": "auto",
+        "loopback_source_name": "@DEFAULT_MONITOR@"
+      }
+    }
   }
 }
 ```
 
-Если OpenClaw не нужен, установите `openclaw.enabled=false`.
-
-## Диагностика аудио
-
-Полезные утилиты из `utils/`:
-
-- `utils/list_devices.py`: список аудиоустройств и PipeWire/Pulse sources.
-- `utils/meter_fast.py`: быстрый live meter для микрофона.
-- `utils/AEC_meter.py`: live-проверка AEC и офлайн-режим для AEC по WAV.
-- `utils/livekit_test.py`: простой тест LiveKit AEC на WAV-файлах.
-- `utils/debug_analysis.py`: анализ артефактов speaker/debug.
-
-Примеры:
+Useful diagnostics:
 
 ```bash
-python utils/meter_fast.py --device 0 --duration 10
-python utils/AEC_meter.py --aec --pulse --duration 30
-python utils/livekit_test.py --self-test
-```
-
-Для PipeWire/Pulse в `AEC_meter.py` можно использовать явные source names:
-
-- микрофон через `@DEFAULT_SOURCE@`
-- loopback через `@DEFAULT_MONITOR@`
-
-Пример:
-
-```bash
-python utils/AEC_meter.py --aec --pulse \
+.venv/bin/python utils/meter_fast.py --duration 10
+.venv/bin/python utils/AEC_meter.py --aec --pulse \
   --mic-source @DEFAULT_SOURCE@ \
   --loopback-source @DEFAULT_MONITOR@ \
   --duration 30
 ```
 
-## Структура проекта
+More details: [docs/audio.md](docs/audio.md).
 
-```text
-agents/      оркестрация runtime
-audio/       микрофон, обработка, STT, буферизация
-core/        конфиг, event bus, логирование
-llm/         speech gate
-config/      JSON-конфиги и паттерны
-docs/        внутренняя документация по audio/STT
-tests/       pytest-набор
-utils/       диагностические и вспомогательные скрипты
+## OpenClaw Setup
+
+Enable OpenClaw forwarding:
+
+```json
+{
+  "openclaw": {
+    "enabled": true,
+    "command": "openclaw",
+    "source_topic": "llm/accepted_phrase",
+    "session_key": "main"
+  }
+}
 ```
 
-## Разработка
+Install the bundled OpenClaw skill:
 
-Базовый рабочий цикл:
+```bash
+OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
+mkdir -p "$OPENCLAW_WORKSPACE/skills"
+rm -rf "$OPENCLAW_WORKSPACE/skills/listener-control"
+cp -R openclaw/skills/listener-control "$OPENCLAW_WORKSPACE/skills/"
+```
+
+Add local Listener notes to OpenClaw `TOOLS.md`:
+
+```bash
+OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
+cat >> "$OPENCLAW_WORKSPACE/TOOLS.md" <<EOF
+
+### Listener
+- LISTENER_HOME=$(pwd)
+- Control URL: http://127.0.0.1:18790
+- Use: \$LISTENER_HOME/.venv/bin/python \$LISTENER_HOME/utils/listenerctl.py
+EOF
+```
+
+Run the command from the Listener repository root so `LISTENER_HOME` is written
+as the current project path.
+
+Listener auto-discovers OpenClaw's assistant name from workspace `IDENTITY.md`
+using `Name:` or `Имя:`. Full guide: [docs/openclaw.md](docs/openclaw.md).
+
+## Runtime SpeechGate Control
+
+When `main.py` is running, SpeechGate modes can be changed without restarting:
+
+```bash
+.venv/bin/python utils/listenerctl.py speech-gate status
+.venv/bin/python utils/listenerctl.py speech-gate set-mode mute --reason "quiet mode"
+.venv/bin/python utils/listenerctl.py speech-gate set-mode chatty --ttl 600
+.venv/bin/python utils/listenerctl.py speech-gate set-mode standby --ttl 300
+.venv/bin/python utils/listenerctl.py speech-gate set-mode normal
+```
+
+HTTP examples:
+
+```bash
+curl -s http://127.0.0.1:18790/speech-gate/status | jq
+curl -s -X POST http://127.0.0.1:18790/speech-gate/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"chatty","ttl_seconds":60,"source":"curl"}' | jq
+```
+
+Modes:
+
+- `normal` - regular directed-speech filtering.
+- `mute` - only assistant-name calls pass.
+- `chatty` - all non-empty phrases pass.
+- `standby` - all phrases are blocked; TTL is required.
+
+## Tests
 
 ```bash
 . .venv/bin/activate
-pytest -q
-python utils/list_devices.py
-python main.py
+python -m pytest -q
 ```
 
-В тестах уже покрыты:
+Current expected result:
 
-- audio processing
-- поведение VAD-пайплайна
-- STT helper-логика
-- обратная совместимость `WindowsAudioProcessor`
-- Linux loopback selection
+```text
+52 passed
+```
 
-## Текущие оговорки
+## Documentation
 
-- На чистом окружении первый запуск чаще всего упирается в отсутствие локальных моделей или в слишком строгий конфиг.
-- На Linux для AEC-диагностики надёжнее работать через Pulse/PipeWire source names, чем только через `sounddevice`.
-- Отправка в OpenClaw опциональна и требует, чтобы `openclaw` был доступен в `PATH`.
+- [INSTALL.md](INSTALL.md) - fresh setup and first run.
+- [docs/audio.md](docs/audio.md) - audio processing, VAD and AEC.
+- [docs/stt.md](docs/stt.md) - Whisper STT and SpeechGate.
+- [docs/openclaw.md](docs/openclaw.md) - OpenClaw forwarding and control skill.
+- [docs/release.md](docs/release.md) - release checklist.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

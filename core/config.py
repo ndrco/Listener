@@ -59,8 +59,6 @@ def _apply_event_topics(section: dict[str, Any], cfg_obj: Any) -> None:
 class Paths:
     """Paths to important files and directories."""
     root: Path
-    profiles_json: Path
-    voice_profiles_json: Path
 
 
 @dataclass
@@ -74,16 +72,9 @@ class AudioEventTopics:
 
 
 @dataclass
-class ProfilesEventTopics:
-    save_profile: str = "profiles/save_profile"
-    profile_saved: str = "profiles/profile_saved"
-    profile_save_failed: str = "profiles/profile_save_failed"
-
-
-@dataclass
 class LlmEventTopics:
     input_text: str = "llm/input_text"
-    speaker_phrase: str = "llm/speaker_phrase"
+    accepted_phrase: str = "llm/accepted_phrase"
 
 
 @dataclass
@@ -99,7 +90,6 @@ class SystemEventTopics:
 @dataclass
 class EventsCfg:
     audio: AudioEventTopics = field(default_factory=AudioEventTopics)
-    profiles: ProfilesEventTopics = field(default_factory=ProfilesEventTopics)
     llm: LlmEventTopics = field(default_factory=LlmEventTopics)
     app: AppEventTopics = field(default_factory=AppEventTopics)
     system: SystemEventTopics = field(default_factory=SystemEventTopics)
@@ -111,13 +101,22 @@ class OpenClawInputCfg:
 
     enabled: bool = False
     command: str = "openclaw"
-    source_topic: str = "llm/speaker_phrase"
+    source_topic: str = "llm/accepted_phrase"
     session_key: str = "main"
-    include_metadata: bool = False
-    include_emotion: bool = True
     gateway_url: str | None = None
     gateway_token: str | None = None
     call_timeout_s: float = 12.0
+
+
+@dataclass
+class ControlCfg:
+    """Local runtime control API settings."""
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 18790
+    token: str | None = None
+    max_ttl_seconds: float = 86400.0
 
 
 @dataclass
@@ -267,35 +266,6 @@ class AudioEmotionCfg:
 
 
 @dataclass
-class SpeakerDiarizerCfg:
-    """Post-processing speaker diarization settings."""
-
-    enabled: bool = False
-    debug: bool = False
-    debug_dir: str | None = None
-    model_path: str | None = str(
-        Path(__file__).resolve().parents[1]
-        / "models"
-        / "audio"
-        / "resemblyzer"
-        / "pretrained.pt"
-    )
-    device: str | None = None
-    queue_maxsize: int = 0
-    max_active_speakers: int = 4
-    forget_after_s: float = 12.0
-    match_threshold: float = 0.72
-    profile_match_threshold: float = 0.82
-    embedding_momentum: float = 0.65
-    partial_rate: float = 1.3
-    min_coverage: float = 0.75
-    min_segment_ms: float = 450.0
-    min_track_update_ms: float = 1000.0
-    face_link_ttl_s: float = 1.5
-    profile_link_ttl_s: float = 20.0
-
-
-@dataclass
 class WhisperSttCfg:
     """Whisper STT settings."""
 
@@ -370,7 +340,6 @@ class AudioCfg:
     playback: AudioPlaybackCfg = field(default_factory=AudioPlaybackCfg)
     processing: AudioProcessingCfg = field(default_factory=AudioProcessingCfg)
     buffer: AudioBufferCfg = field(default_factory=AudioBufferCfg)
-    speaker: SpeakerDiarizerCfg = field(default_factory=SpeakerDiarizerCfg)
     stt: WhisperSttCfg = field(default_factory=WhisperSttCfg)
     emotion: AudioEmotionCfg = field(default_factory=AudioEmotionCfg)
 
@@ -381,12 +350,9 @@ class Config:
         self.info: bool = False
         self.preview_width: int = 960
         root = Path(__file__).resolve().parents[1]
-        self.paths = Paths(
-            root=root,
-            profiles_json=root / "data" / "profiles.json",
-            voice_profiles_json=root / "data" / "voice_profiles.json",
-        )
+        self.paths = Paths(root=root)
         self.openclaw = OpenClawInputCfg()
+        self.control = ControlCfg()
         self.events = EventsCfg()
         self.speech_gate = SpeechGateCfg()
         self.audio = AudioCfg()
@@ -398,7 +364,7 @@ class Config:
         self.audio.stt.partial_topic = audio_events.stt_partial
         self.audio.stt.final_topic = audio_events.stt_final
         if not str(self.openclaw.source_topic or "").strip():
-            self.openclaw.source_topic = self.events.llm.speaker_phrase
+            self.openclaw.source_topic = self.events.llm.accepted_phrase
 
 cfg = Config()
 
@@ -437,15 +403,6 @@ def load(path: str | None = None) -> None:
             if isinstance(session_key_value, str) and session_key_value.strip():
                 openclaw_cfg.session_key = session_key_value.strip()
 
-            if "include_metadata" in openclaw_section:
-                openclaw_cfg.include_metadata = bool(
-                    openclaw_section.get("include_metadata", openclaw_cfg.include_metadata)
-                )
-            if "include_emotion" in openclaw_section:
-                openclaw_cfg.include_emotion = bool(
-                    openclaw_section.get("include_emotion", openclaw_cfg.include_emotion)
-                )
-
             gateway_url_value = openclaw_section.get("gateway_url", openclaw_cfg.gateway_url)
             if gateway_url_value in ("", None):
                 openclaw_cfg.gateway_url = None
@@ -465,6 +422,41 @@ def load(path: str | None = None) -> None:
                     timeout_val = openclaw_cfg.call_timeout_s
                 if timeout_val > 0:
                     openclaw_cfg.call_timeout_s = timeout_val
+
+        # control API
+        control_section = _as_dict(data.get("control"))
+        if control_section:
+            control_cfg = cfg.control
+            if "enabled" in control_section:
+                control_cfg.enabled = bool(control_section.get("enabled", control_cfg.enabled))
+
+            host_value = control_section.get("host", control_cfg.host)
+            if isinstance(host_value, str) and host_value.strip():
+                control_cfg.host = host_value.strip()
+
+            try:
+                port_value = int(control_section.get("port", control_cfg.port))
+                if 0 < port_value <= 65535:
+                    control_cfg.port = port_value
+            except (TypeError, ValueError):
+                pass
+
+            token_value = control_section.get("token", control_cfg.token)
+            if token_value in ("", None):
+                control_cfg.token = None
+            elif isinstance(token_value, str):
+                control_cfg.token = token_value.strip() or None
+            else:
+                control_cfg.token = str(token_value)
+
+            try:
+                max_ttl_value = float(
+                    control_section.get("max_ttl_seconds", control_cfg.max_ttl_seconds)
+                )
+                if max_ttl_value > 0:
+                    control_cfg.max_ttl_seconds = max_ttl_value
+            except (TypeError, ValueError):
+                pass
 
         # speech gate
         speech_gate_section = _as_dict(data.get("speech_gate"))
@@ -1023,113 +1015,6 @@ def load(path: str | None = None) -> None:
             _as_int(buffer_section.get("queue_maxsize", buffer_cfg.queue_maxsize), buffer_cfg.queue_maxsize),
         )
 
-        speaker_section = _as_dict(a.get("speaker"))
-        speaker_cfg = cfg.audio.speaker
-        speaker_cfg.enabled = bool(speaker_section.get("enabled", speaker_cfg.enabled))
-        speaker_cfg.queue_maxsize = max(
-            0,
-            _as_int(
-                speaker_section.get("queue_maxsize", speaker_cfg.queue_maxsize),
-                speaker_cfg.queue_maxsize,
-            ),
-        )
-        speaker_cfg.max_active_speakers = max(
-            1,
-            _as_int(
-                speaker_section.get("max_active_speakers", speaker_cfg.max_active_speakers),
-                speaker_cfg.max_active_speakers,
-            ),
-        )
-        speaker_cfg.forget_after_s = max(
-            0.0,
-            _as_float(
-                speaker_section.get("forget_after_s", speaker_cfg.forget_after_s),
-                speaker_cfg.forget_after_s,
-            ),
-        )
-        speaker_cfg.match_threshold = _clip(
-            _as_float(
-                speaker_section.get("match_threshold", speaker_cfg.match_threshold),
-                speaker_cfg.match_threshold,
-            ),
-            -1.0,
-            1.0,
-        )
-        speaker_cfg.profile_match_threshold = _clip(
-            _as_float(
-                speaker_section.get(
-                    "profile_match_threshold", speaker_cfg.profile_match_threshold
-                ),
-                speaker_cfg.profile_match_threshold,
-            ),
-            -1.0,
-            1.0,
-        )
-        speaker_cfg.embedding_momentum = _clip(
-            _as_float(
-                speaker_section.get("embedding_momentum", speaker_cfg.embedding_momentum),
-                speaker_cfg.embedding_momentum,
-            ),
-            0.0,
-            1.0,
-        )
-        speaker_cfg.partial_rate = max(
-            0.6,
-            _as_float(
-                speaker_section.get("partial_rate", speaker_cfg.partial_rate),
-                speaker_cfg.partial_rate,
-            ),
-        )
-        speaker_cfg.min_coverage = _clip(
-            _as_float(
-                speaker_section.get("min_coverage", speaker_cfg.min_coverage),
-                speaker_cfg.min_coverage,
-            ),
-            0.1,
-            1.0,
-        )
-        speaker_cfg.min_segment_ms = max(
-            0.0,
-            _as_float(
-                speaker_section.get("min_segment_ms", speaker_cfg.min_segment_ms),
-                speaker_cfg.min_segment_ms,
-            ),
-        )
-        speaker_cfg.min_track_update_ms = max(
-            0.0,
-            _as_float(
-                speaker_section.get(
-                    "min_track_update_ms", speaker_cfg.min_track_update_ms
-                ),
-                speaker_cfg.min_track_update_ms,
-            ),
-        )
-        speaker_cfg.face_link_ttl_s = max(
-            0.0,
-            _as_float(
-                speaker_section.get("face_link_ttl_s", speaker_cfg.face_link_ttl_s),
-                speaker_cfg.face_link_ttl_s,
-            ),
-        )
-        speaker_cfg.profile_link_ttl_s = max(
-            speaker_cfg.face_link_ttl_s,
-            _as_float(
-                speaker_section.get(
-                    "profile_link_ttl_s", speaker_cfg.profile_link_ttl_s
-                ),
-                speaker_cfg.profile_link_ttl_s,
-            ),
-        )
-
-        model_path_value = speaker_section.get("model_path", speaker_cfg.model_path)
-        speaker_cfg.model_path = _resolve_project_path(model_path_value, root)
-
-        device_value = speaker_section.get("device", speaker_cfg.device)
-        if device_value in (None, ""):
-            speaker_cfg.device = None
-        else:
-            speaker_cfg.device = str(device_value)
-
         stt_section = _as_dict(a.get("stt"))
         stt_cfg = cfg.audio.stt
         stt_cfg.enabled = bool(stt_section.get("enabled", stt_cfg.enabled))
@@ -1365,12 +1250,5 @@ def load(path: str | None = None) -> None:
         except (TypeError, ValueError):
             min_text_length = emotion_cfg.min_text_length
         emotion_cfg.min_text_length = max(0, min_text_length)
-
-    # ensure data dirs exist
-    cfg.paths.profiles_json.parent.mkdir(parents=True, exist_ok=True)
-    cfg.paths.voice_profiles_json.parent.mkdir(parents=True, exist_ok=True)
-
-
-
 
 

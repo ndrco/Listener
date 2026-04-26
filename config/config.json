@@ -7,13 +7,18 @@
   "debug": true,
   "info": true,
   "preview_width": 960,
+  "control": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 18790,
+    "token": null,
+    "max_ttl_seconds": 86400
+  },
   "openclaw": {
     "enabled": true,
     "command": "openclaw",
-    "source_topic": "llm/speaker_phrase",
+    "source_topic": "llm/accepted_phrase",
     "session_key": "main",
-    "include_metadata": false,
-    "include_emotion": false,
     "gateway_url": null,
     "gateway_token": null,
     "call_timeout_s": 12.0
@@ -64,7 +69,7 @@
     },
     "llm": {
       "input_text": "llm/input_text",
-      "speaker_phrase": "llm/speaker_phrase"
+      "accepted_phrase": "llm/accepted_phrase"
     },
     "app": {
       "stop": "app/stop"

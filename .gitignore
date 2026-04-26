@@ -1,6 +1,10 @@
 # Python
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.pyc
 *.pyo
 *.pyd
@@ -30,6 +34,9 @@ venv/
 *.mkv
 *.jpg
 *.png
+*.wav
+*.flac
+*.mp3
 
 # YOLO / training outputs
 runs/

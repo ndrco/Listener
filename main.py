@@ -6,6 +6,7 @@ import sys
 from typing import Optional
 
 from agents.audio_agent import AudioAgent
+from agents.control_agent import ControlAgent
 from agents.openclaw_input_agent import OpenClawInputAgent
 from agents.speech_gate_agent import SpeechGateAgent
 from core.bus import bus
@@ -25,6 +26,7 @@ async def main() -> None:
 
     audio: Optional[AudioAgent] = None
     speech_gate: Optional[SpeechGateAgent] = None
+    control: Optional[ControlAgent] = None
     openclaw_input: Optional[OpenClawInputAgent] = None
 
     if getattr(cfg, "audio", None):
@@ -41,6 +43,14 @@ async def main() -> None:
     except Exception:
         logging.exception("main: failed to start SpeechGateAgent")
         speech_gate = None
+
+    if speech_gate is not None:
+        control = ControlAgent(speech_gate=speech_gate)
+        try:
+            await control.start()
+        except Exception:
+            logging.exception("main: failed to start ControlAgent")
+            control = None
 
     openclaw_input = OpenClawInputAgent()
     try:
@@ -110,6 +120,12 @@ async def main() -> None:
         try:
             if openclaw_input:
                 await openclaw_input.close()
+        except Exception:
+            pass
+
+        try:
+            if control:
+                await control.close()
         except Exception:
             pass
 

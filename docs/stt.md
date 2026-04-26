@@ -154,6 +154,57 @@ false`) возвращается пустой список.
 - **chatty** — «болтливый» режим: реплики пропускаются без фильтрации, гейт
   фактически всегда открыт.
 
+### Runtime-переключение режимов
+
+Во время работы `main.py` поднимает локальный control API
+`http://127.0.0.1:18790`. Пользоваться им проще через CLI:
+
+```bash
+.venv/bin/python utils/listenerctl.py speech-gate status
+.venv/bin/python utils/listenerctl.py speech-gate set-mode mute --reason "quiet mode"
+.venv/bin/python utils/listenerctl.py speech-gate set-mode chatty --ttl 600
+.venv/bin/python utils/listenerctl.py speech-gate set-mode standby --ttl 300
+.venv/bin/python utils/listenerctl.py speech-gate set-mode normal
+```
+
+`normal` отменяет временный режим. `mute` и `chatty` могут быть постоянными или
+временными. `standby` принимается только с TTL, чтобы не запереть голосовое
+управление. Любое runtime-переключение сбрасывает attention-window.
+
+Секция `control` в `config/config.json`:
+
+```json
+{
+  "control": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 18790,
+    "token": null,
+    "max_ttl_seconds": 86400
+  }
+}
+```
+
+CLI читает `LISTENER_CONTROL_URL` и `LISTENER_CONTROL_TOKEN`. Если `host` не
+loopback, Listener требует непустой `control.token`.
+
+OpenClaw-интеграция v1 реализована как workspace skill:
+
+```bash
+mkdir -p "$(openclaw config get agents.defaults.workspace)/skills"
+cp -R openclaw/skills/listener-control \
+  "$(openclaw config get agents.defaults.workspace)/skills/"
+```
+
+В OpenClaw `TOOLS.md` удобно добавить локальную заметку:
+
+```markdown
+### Listener
+- LISTENER_HOME=<path-to-Listener>
+- Control URL: http://127.0.0.1:18790
+- Use: $LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py
+```
+
 ### Настройка `speech_gate`
 
 Ключи секции `speech_gate` в `config/config.json` и их назначение:
@@ -257,67 +308,6 @@ Name: Kissa
    (`cfg.audio.stt.partial_topic`, зеркалирует `cfg.events.audio.stt_partial`) и финальные фразы
    (`cfg.audio.stt.final_topic`, зеркалирует `cfg.events.audio.stt_final`). Финальный текст
    также дублируется в `cfg.events.llm.input_text` для языковой модели.
-
-## Диаризация и нарезка буфера для STT
-
-При включении секции `audio.speaker` между `BufferedSpeechWriter` и
-`WhisperStreamingTranscriber` автоматически встраивается
-`audio.speaker.SpeakerDiarizer`. Он забирает из буфера готовые сегменты,
-прогоняет их через Resemblyzer и при необходимости делит на более короткие
-`SpeechSegment`, чтобы STT получал реплики с однородным говорящим.
-
-Основные эффекты для распознавания речи:
-
-* **Очередь сегментов.** Свойство `SpeakerDiarizer.queue` возвращает
-  собственную `asyncio.Queue`, которую `WhisperStreamingTranscriber` использует
-  вместо `BufferedSpeechWriter.queue`. При отключённом модуле возвращается
-  исходная очередь буфера, поэтому логика транскрайбера не меняется.
-* **Метаданные спикера.** Каждый подсегмент получает дополнительные поля:
-  `speaker_cluster_id`, `speaker_user_id`, `speaker_name`, `speaker_similarity`,
-  `speaker_chunk_index`, `speaker_chunks_total`, `speaker_offset_start_ms`,
-  `speaker_offset_end_ms`, `speaker_source`, `track_id`/`hint_track_id`, а также
-  размеры исходного блока (`parent_bytes`, `parent_duration_ms`). Эти значения
-  попадают в события `audio/stt/partial` и `audio/stt/final`, что позволяет
-  маршрутизировать реплики по говорящим без дополнительной обработки.
-* **Корректные оценки уверенности.** При нарезке диарайзер пересчитывает
-  длительность и количество кадров, поэтому `_build_metadata()` в STT получает
-  реалистичные значения `duration_ms`, `frames`, `voice_frames` и может верно
-  оценить `confidence`, использовать VAD-метрики и выдерживать таймауты
-  стабильности.
-
-Таким образом, после включения `audio.speaker.enabled=true` весь пайплайн
-автоматически начинает получать нарезанные по спикерам сегменты, а публикации
-STT становятся богаче метаданными и готовыми к дальнейшей маршрутизации.
-
-### Параметры `audio.speaker`
-
-Диаризатор настраивается секцией `audio.speaker` (`cfg.audio.speaker`) в
-`config/config.json`. Значения напрямую влияют на то, какие сегменты попадут в STT,
-какие метаданные окажутся в событиях и какую задержку даст Resemblyzer.
-
-| Ключ | Назначение |
-|------|------------|
-| `enabled` | Включает модуль. Даже при отсутствии весов Resemblyzer использует встроенную модель и продолжает поставлять сегменты в STT. |
-| `model_path` | Путь к `pretrained.pt` Resemblyzer (по умолчанию `models/audio/resemblyzer/pretrained.pt`). Позволяет подменить веса без изменений кода. |
-| `device` | Устройство инференса (`cpu`, `cuda`, `cuda:0`, `mps`). Влияет на скорость нарезки и общую задержку перед STT. |
-| `queue_maxsize` | Лимит внутренней очереди подсегментов. Помогает избежать накопления старых реплик, если STT временно недоступен. |
-| `max_active_speakers` | Максимум одновременно отслеживаемых спикеров. При превышении старые эмбеддинги вытесняются, что уменьшает объём памяти и ускоряет сравнения. |
-| `forget_after_s` | TTL эмбеддингов в секундах. Если спикер не звучал дольше, его профиль удаляется и повторное появление создаст новый `speaker_cluster_id`. |
-| `match_threshold` | Минимальное косинусное сходство для повторного использования существующего динамического спикера. Повышение значения приводит к более агрессивному созданию новых кластеров. |
-| `profile_match_threshold` | Порог сопоставления с сохранёнными профилями (`core.profiles`). При превышении значения подсегмент получает `speaker_user_id`/`speaker_name`, что отражается в событиях STT. |
-| `embedding_momentum` | Коэффициент EMA (0…1) для сглаживания голосового эмбеддинга. Большие значения уменьшают скачки метаданных, но замедляют реакцию на смену тембра. |
-| `partial_rate` | Количество окон Resemblyzer в секунду. Высокое значение даёт более точные точки разделения, но увеличивает нагрузку на CPU/GPU. |
-| `min_coverage` | Минимальная доля последнего окна, которая должна быть заполнена речью, прежде чем диаризатор «отрежет» кусок. Помогает избежать слишком частых публикаций. |
-| `min_segment_ms` | Минимальная длительность подсегмента. Короткие вставки сливаются с соседями, чтобы STT не получал фрагменты < указанного порога. |
-| `min_track_update_ms` | Минимальная длительность аудио (мс) для обновления кэша голосового эмбеддинга. Реплики короче порога уходят в STT без изменения профилей/кеша. |
-| `face_link_ttl_s` | Окно (в секундах) для сопоставления с событиями `face/talking`: если визуальный трек говорил недавно, подсегмент получит `track_id`/`hint_track_id`. |
-| `profile_link_ttl_s` | Сколько секунд хранить последнюю связку «трек ↔ аудио-эмбеддинг», чтобы при ручном сохранении профиля можно было забрать голос даже после короткой паузы. |
-
-При изменении этих параметров стоит отслеживать задержки и нагрузку транскрайбера:
-слишком малые `min_segment_ms` и высокие `partial_rate` приведут к лавине
-подсегментов, тогда как низкие пороги сходства (`match_threshold`) могут
-постоянно присваивать новые `speaker_cluster_id`, усложняя агрегацию истории в
-LLM.
 
 ## Управление состоянием
 

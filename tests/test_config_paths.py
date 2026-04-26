@@ -33,6 +33,13 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
     config_path.write_text(
         json.dumps(
             {
+                "control": {
+                    "enabled": True,
+                    "host": "127.0.0.1",
+                    "port": 18791,
+                    "token": "",
+                    "max_ttl_seconds": 123.0,
+                },
                 "speech_gate": {
                     "patterns_file": "config/speech_gate_patterns.json",
                     "identity_file": ".openclaw/workspace/IDENTITY.md",
@@ -61,11 +68,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
         monkeypatch.setattr(
             cfg,
             "paths",
-            Paths(
-                root=project_root,
-                profiles_json=project_root / "data" / "profiles.json",
-                voice_profiles_json=project_root / "data" / "voice_profiles.json",
-            ),
+            Paths(root=project_root),
         )
         load(str(config_path))
 
@@ -82,6 +85,11 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
         )
         assert cfg.audio.stt.model == str(stt_snapshot.resolve())
         assert cfg.audio.stt.download_root == str(whisper_dir.resolve())
+        assert cfg.control.enabled is True
+        assert cfg.control.host == "127.0.0.1"
+        assert cfg.control.port == 18791
+        assert cfg.control.token is None
+        assert cfg.control.max_ttl_seconds == 123.0
     finally:
         cfg.paths = real_paths
         load(str(ROOT / "config" / "config.json"))

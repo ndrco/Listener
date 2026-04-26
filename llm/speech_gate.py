@@ -38,6 +38,15 @@ class SpeechGateMode(str, Enum):
                 return mode
         return cls.NORMAL
 
+    @classmethod
+    def parse(cls, value: object) -> "SpeechGateMode":
+        text = str(value or "").strip().lower()
+        for mode in cls:
+            if mode.value == text:
+                return mode
+        valid = ", ".join(mode.value for mode in cls)
+        raise ValueError(f"invalid speech gate mode {value!r}; expected one of: {valid}")
+
 
 @dataclass
 class GateDecision:
@@ -103,6 +112,9 @@ class SpeechDirectionGate:
 
     def set_mode(self, mode: SpeechGateMode) -> None:
         self.mode = mode
+
+    def clear_attention(self) -> None:
+        self._attention_until = 0.0
 
     def reload_patterns(self) -> None:
         sg_cfg = getattr(cfg, "speech_gate", object())
@@ -363,12 +375,19 @@ class SpeechDirectionGate:
         if continuation:
             self._extend_attention(now)
 
-    def should_allow(self, text: str, *, payload: dict | None = None) -> GateDecision:
+    def should_allow(
+        self,
+        text: str,
+        *,
+        payload: dict | None = None,
+        mode: SpeechGateMode | None = None,
+    ) -> GateDecision:
         del payload  # reserved for future context-aware gating
 
         normalized = self._normalize(text)
         continuation = self._detect_continuation(normalized)
         now = time.monotonic()
+        active_mode = mode or self.mode
 
         if not self.enabled:
             return GateDecision(True, 0.0, 0.0, 1.0, continuation, "disabled")
@@ -376,9 +395,9 @@ class SpeechDirectionGate:
         if not normalized:
             return GateDecision(False, 0.0, 0.0, 0.0, continuation, "empty")
 
-        in_attention = self.mode == SpeechGateMode.CHATTY or now < self._attention_until
+        in_attention = active_mode == SpeechGateMode.CHATTY or now < self._attention_until
 
-        if self.mode == SpeechGateMode.STANDBY:
+        if active_mode == SpeechGateMode.STANDBY:
             return GateDecision(False, 0.0, 0.0, 0.0, continuation, "standby")
 
         rule_score, has_name = self._rules_score(normalized)
@@ -388,7 +407,7 @@ class SpeechDirectionGate:
                 self._extend_attention(now)
             return GateDecision(True, rule_score, 1.0, 1.0, continuation, "attention")
 
-        if self.mode == SpeechGateMode.MUTE and not has_name:
+        if active_mode == SpeechGateMode.MUTE and not has_name:
             return GateDecision(False, rule_score, 0.0, rule_score, continuation, "mute")
 
         if rule_score >= self.rules_threshold:
