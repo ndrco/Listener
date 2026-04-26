@@ -12,6 +12,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 DEFAULT_CONTROL_URL = "http://127.0.0.1:18790"
+SPEECH_GATE_MODES = ["normal", "mute", "chatty", "standby"]
+
+
+def add_set_mode_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ttl", type=float, default=None, help="Temporary mode TTL in seconds.")
+    parser.add_argument("--reason", default="", help="Human-readable reason.")
+    parser.add_argument("--source", default="listenerctl", help="Mode-change source label.")
+    parser.add_argument("--json", action="store_true", help="Print raw JSON response.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,11 +43,20 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--json", action="store_true", help="Print raw JSON response.")
 
     set_mode = speech_gate_subparsers.add_parser("set-mode", help="Set SpeechGate mode.")
-    set_mode.add_argument("mode", choices=["normal", "mute", "chatty", "standby"])
-    set_mode.add_argument("--ttl", type=float, default=None, help="Temporary mode TTL in seconds.")
-    set_mode.add_argument("--reason", default="", help="Human-readable reason.")
-    set_mode.add_argument("--source", default="listenerctl", help="Mode-change source label.")
-    set_mode.add_argument("--json", action="store_true", help="Print raw JSON response.")
+    set_mode.add_argument("mode", choices=SPEECH_GATE_MODES)
+    add_set_mode_options(set_mode)
+
+    status_alias = subparsers.add_parser("status", help="Shortcut for: speech-gate status.")
+    status_alias.add_argument("--json", action="store_true", help="Print raw JSON response.")
+    status_alias.set_defaults(resource="speech-gate", action="status")
+
+    for mode in SPEECH_GATE_MODES:
+        mode_alias = subparsers.add_parser(
+            mode,
+            help=f"Shortcut for: speech-gate set-mode {mode}.",
+        )
+        add_set_mode_options(mode_alias)
+        mode_alias.set_defaults(resource="speech-gate", action="set-mode", mode=mode)
 
     return parser
 

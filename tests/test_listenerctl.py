@@ -41,3 +41,36 @@ def test_listenerctl_status_json_parse():
     assert args.resource == "speech-gate"
     assert args.action == "status"
     assert args.json is True
+
+
+def test_listenerctl_status_shortcut_parse():
+    parser = build_parser()
+    args = parser.parse_args(["status", "--json"])
+
+    assert args.resource == "speech-gate"
+    assert args.action == "status"
+    assert args.json is True
+
+
+def test_listenerctl_mode_shortcut_payload_shape():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "chatty",
+            "--ttl",
+            "600",
+            "--reason",
+            "conversation mode",
+            "--source",
+            "openclaw",
+        ]
+    )
+
+    assert args.resource == "speech-gate"
+    assert args.action == "set-mode"
+    assert build_set_mode_payload(args) == {
+        "mode": "chatty",
+        "ttl_seconds": 600.0,
+        "source": "openclaw",
+        "reason": "conversation mode",
+    }

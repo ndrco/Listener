@@ -143,13 +143,13 @@ curl -s http://127.0.0.1:18790/speech-gate/status | jq
 Switch SpeechGate to temporary chatty mode:
 
 ```bash
-.venv/bin/python utils/listenerctl.py speech-gate set-mode chatty --ttl 60
+.venv/bin/python utils/listenerctl.py chatty --ttl 60
 ```
 
 Return to normal:
 
 ```bash
-.venv/bin/python utils/listenerctl.py speech-gate set-mode normal
+.venv/bin/python utils/listenerctl.py normal
 ```
 
 ## 6. OpenClaw Integration

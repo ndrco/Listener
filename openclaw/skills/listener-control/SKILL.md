@@ -13,24 +13,27 @@ Assume `LISTENER_HOME` points to the Listener repo. If it is not set, check the
 workspace `TOOLS.md` for the local Listener path.
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py speech-gate status
+$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py status
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py speech-gate set-mode normal
+$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py normal
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py speech-gate set-mode mute --reason "quiet mode"
+$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py mute --reason "quiet mode"
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py speech-gate set-mode chatty --ttl 600 --reason "conversation mode"
+$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py chatty --ttl 600 --reason "conversation mode"
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py speech-gate set-mode standby --ttl 300 --reason "standby requested"
+$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py standby --ttl 300 --reason "standby requested"
 ```
+
+The longer canonical commands also work, e.g.
+`listenerctl.py speech-gate set-mode chatty` and `listenerctl.py speech-gate status`.
 
 ## Intent Mapping
 

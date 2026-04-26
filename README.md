@@ -57,7 +57,7 @@ In another terminal:
 
 ```bash
 curl -s http://127.0.0.1:18790/ | jq
-.venv/bin/python utils/listenerctl.py speech-gate status
+.venv/bin/python utils/listenerctl.py status
 ```
 
 ## Configuration
@@ -190,11 +190,11 @@ using `Name:` or `Имя:`. Full guide: [docs/openclaw.md](docs/openclaw.md).
 When `main.py` is running, SpeechGate modes can be changed without restarting:
 
 ```bash
-.venv/bin/python utils/listenerctl.py speech-gate status
-.venv/bin/python utils/listenerctl.py speech-gate set-mode mute --reason "quiet mode"
-.venv/bin/python utils/listenerctl.py speech-gate set-mode chatty --ttl 600
-.venv/bin/python utils/listenerctl.py speech-gate set-mode standby --ttl 300
-.venv/bin/python utils/listenerctl.py speech-gate set-mode normal
+.venv/bin/python utils/listenerctl.py status
+.venv/bin/python utils/listenerctl.py mute --reason "quiet mode"
+.venv/bin/python utils/listenerctl.py chatty --ttl 600
+.venv/bin/python utils/listenerctl.py standby --ttl 300
+.venv/bin/python utils/listenerctl.py normal
 ```
 
 HTTP examples:
