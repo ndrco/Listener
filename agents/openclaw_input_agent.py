@@ -6,12 +6,11 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
-import shlex
 import subprocess
 import uuid
 from typing import Any
 
+from agents.openclaw_gateway import build_openclaw_base_command
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
 
@@ -115,7 +114,7 @@ class OpenClawInputAgent:
                 log.exception("OpenClawInputAgent: failed to send chat message")
 
     async def _send_chat_send(self, params: dict[str, Any]) -> None:
-        base_cmd = self._build_base_command(getattr(cfg.openclaw, "command", "openclaw"))
+        base_cmd = build_openclaw_base_command(getattr(cfg.openclaw, "command", "openclaw"))
 
         args = [
             *base_cmd,
@@ -172,41 +171,6 @@ class OpenClawInputAgent:
             out = (proc.stdout or b"").decode("utf-8", errors="ignore").strip()
             if out:
                 log.info("OpenClawInputAgent: chat.send ok: %s", out)
-
-    @staticmethod
-    def _build_base_command(raw: Any) -> list[str]:
-        if isinstance(raw, list):
-            tokens = [str(part).strip() for part in raw if str(part).strip()]
-        else:
-            text = str(raw or "").strip()
-            if not text:
-                text = "openclaw"
-            try:
-                tokens = shlex.split(text, posix=False)
-            except Exception:
-                tokens = [text]
-            tokens = [part.strip() for part in tokens if part and part.strip()]
-
-        if not tokens:
-            tokens = ["openclaw"]
-
-        first = tokens[0].lower()
-        contains_openclaw = any(
-            OpenClawInputAgent._token_is_openclaw_binary(token) for token in tokens
-        )
-        if first in {"wsl", "wsl.exe"} and not contains_openclaw:
-            tokens.append("openclaw")
-        return tokens
-
-    @staticmethod
-    def _token_is_openclaw_binary(token: str) -> bool:
-        cleaned = str(token or "").strip().strip("\"'").strip()
-        if not cleaned:
-            return False
-        if cleaned.startswith("-"):
-            return False
-        name = os.path.basename(cleaned).lower()
-        return name in {"openclaw", "openclaw.exe"}
 
     def _build_message(self, payload: dict[str, Any]) -> str:
         raw_text = payload.get("text")

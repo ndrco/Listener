@@ -9,9 +9,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from agents.openclaw_gateway import abort_openclaw_chat_session
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
-from llm.speech_gate import SpeechDirectionGate, SpeechGateMode
+from llm.speech_gate import LocalCommandMatch, SpeechDirectionGate, SpeechGateMode
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,6 @@ class SpeechGateAgent:
             )
             return
 
-        self._gate = SpeechDirectionGate.from_config()
         self._clear_mode_state(source="config", reason="")
         self._bus.subscribe(self._input_topic, self._on_input_text)
         self._running = True
@@ -108,7 +108,29 @@ class SpeechGateAgent:
     ) -> dict[str, Any]:
         target_mode = SpeechGateMode.parse(mode)
         ttl = self._normalise_ttl(ttl_seconds)
-        if target_mode == SpeechGateMode.STANDBY and ttl is None:
+        return await self._apply_mode_change(
+            target_mode,
+            ttl_seconds=ttl,
+            source=source,
+            reason=reason,
+        )
+
+    async def _apply_mode_change(
+        self,
+        mode: SpeechGateMode,
+        *,
+        ttl_seconds: float | None,
+        source: str,
+        reason: str,
+        allow_standby_without_ttl: bool = False,
+    ) -> dict[str, Any]:
+        target_mode = mode if isinstance(mode, SpeechGateMode) else SpeechGateMode.parse(mode)
+        ttl = self._normalise_ttl(ttl_seconds)
+        if (
+            target_mode == SpeechGateMode.STANDBY
+            and ttl is None
+            and not allow_standby_without_ttl
+        ):
             raise ValueError("standby mode requires ttl_seconds")
 
         previous_mode = self._gate.mode
@@ -155,6 +177,90 @@ class SpeechGateAgent:
             self._mode_reason,
         )
         return self.get_status()
+
+    async def _handle_local_command(self, match: LocalCommandMatch, text: str) -> None:
+        reason = f"voice command via {match.assistant_name}: {match.phrase}"
+        source = "speech_gate_local"
+
+        if match.action == "mute":
+            status = await self._apply_mode_change(
+                SpeechGateMode.MUTE,
+                ttl_seconds=None,
+                source=source,
+                reason=reason,
+            )
+            log.info(
+                "speech_gate: local command -> mode=%s assistant=%s phrase=%s text=%s",
+                status["mode"],
+                match.assistant_name,
+                match.phrase,
+                text,
+            )
+            return
+
+        if match.action == "normal":
+            status = await self._apply_mode_change(
+                SpeechGateMode.NORMAL,
+                ttl_seconds=None,
+                source=source,
+                reason=reason,
+            )
+            log.info(
+                "speech_gate: local command -> mode=%s assistant=%s phrase=%s text=%s",
+                status["mode"],
+                match.assistant_name,
+                match.phrase,
+                text,
+            )
+            return
+
+        if match.action == "standby":
+            status = await self._apply_mode_change(
+                SpeechGateMode.STANDBY,
+                ttl_seconds=None,
+                source=source,
+                reason=reason,
+                allow_standby_without_ttl=True,
+            )
+            log.info(
+                "speech_gate: local command -> mode=%s assistant=%s phrase=%s text=%s",
+                status["mode"],
+                match.assistant_name,
+                match.phrase,
+                text,
+            )
+            return
+
+        if match.action == "stop_generation":
+            session_key = str(getattr(cfg.openclaw, "session_key", "") or "main").strip() or "main"
+            try:
+                result = await abort_openclaw_chat_session(session_key)
+            except FileNotFoundError:
+                log.warning(
+                    "speech_gate: local stop command ignored because OpenClaw command is not available"
+                )
+            except Exception:
+                log.exception(
+                    "speech_gate: failed to abort OpenClaw generation via local stop command"
+                )
+            else:
+                log.info(
+                    "speech_gate: local stop command sent to OpenClaw "
+                    "(assistant=%s phrase=%s session=%s aborted=%s runs=%s)",
+                    match.assistant_name,
+                    match.phrase,
+                    session_key,
+                    bool(result.get("aborted")),
+                    len(result.get("runIds") or []),
+                )
+            return
+
+        log.debug(
+            "speech_gate: ignored unsupported local command action=%s assistant=%s text=%s",
+            match.action,
+            match.assistant_name,
+            text,
+        )
 
     def get_status(self) -> dict[str, Any]:
         now = time.time()
@@ -296,6 +402,11 @@ class SpeechGateAgent:
         payload: dict[str, Any] = dict(event.payload or {})
         text = " ".join(str(payload.get("text") or "").split())
         if not text:
+            return
+
+        local_command = self._gate.detect_local_command(text)
+        if local_command is not None:
+            await self._handle_local_command(local_command, text)
             return
 
         # Keep this synchronous: in some Linux runtimes torch-initialized processes

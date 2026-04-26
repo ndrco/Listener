@@ -92,6 +92,21 @@ Supported modes:
 phrase that started inside a TTL window still uses that mode even if Whisper
 finishes after the TTL expires.
 
+## Local Voice Commands
+
+Listener can also intercept a few assistant-name voice commands locally before
+the phrase is forwarded to OpenClaw:
+
+- `Имя, помолчи` -> switches SpeechGate to `mute`
+- `Имя, говори` -> switches SpeechGate to `normal`
+- `Имя, отключись` -> switches SpeechGate to `standby`
+- `Имя, стоп` -> calls OpenClaw `chat.abort` for the configured `openclaw.session_key`
+
+These local commands are intentionally swallowed by Listener and are not sent as
+regular `chat.send` input. OpenClaw's own control skill is still useful for
+typed commands, richer mode changes such as temporary `chatty`, and manual
+inspection through `listenerctl`.
+
 ## Install the OpenClaw Skill
 
 From the Listener repository:

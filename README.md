@@ -216,6 +216,17 @@ Modes:
 - `chatty` - all non-empty phrases pass.
 - `standby` - all phrases are blocked; TTL is required.
 
+Listener can also handle a small set of voice-only mode commands locally before
+anything is forwarded to OpenClaw:
+
+- `Имя, помолчи` -> `mute`
+- `Имя, говори` -> `normal`
+- `Имя, отключись` -> `standby`
+- `Имя, стоп` -> OpenClaw `chat.abort` for the configured `session_key`
+
+These local commands are swallowed by `SpeechGateAgent` and are not forwarded as
+regular chat input.
+
 ## Tests
 
 ```bash

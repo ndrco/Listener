@@ -22,6 +22,32 @@ from core.config import cfg
 
 log = logging.getLogger(__name__)
 _IDENTITY_NAME_RE = re.compile(r"^\s*(Name|Имя)\s*[:=\-—]\s*(.+?)\s*$", re.IGNORECASE)
+_LOCAL_MUTE_COMMANDS = frozenset({"замолчи", "молчи", "тихо", "помолчи"})
+_LOCAL_NORMAL_COMMANDS = frozenset(
+    {"голос", "говори", "разговаривай", "ответь", "ты где", "слушай"}
+)
+_LOCAL_STANDBY_COMMANDS = frozenset(
+    {
+        "отключись",
+        "выключись",
+        "перестань слушать",
+        "перестань разговаривать",
+        "не слушай",
+    }
+)
+_LOCAL_ABORT_COMMANDS = frozenset({"остановись", "стоп", "хватит", "прекрати", "достаточно", "стой"})
+_LOCAL_COMMAND_FILLERS = frozenset(
+    {
+        "пожалуйста",
+        "плиз",
+        "ладно",
+        "сейчас",
+        "снова",
+        "обратно",
+        "давай",
+        "ну",
+    }
+)
 
 
 class SpeechGateMode(str, Enum):
@@ -56,6 +82,13 @@ class GateDecision:
     final_score: float
     continuation: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class LocalCommandMatch:
+    action: str
+    assistant_name: str
+    phrase: str
 
 
 class DirectedIntentClassifier:
@@ -103,6 +136,9 @@ class SpeechDirectionGate:
         self._classifier_disabled = False
         self._classifier_failed_logged = False
         self._ml_threshold = float(getattr(getattr(sg_cfg, "model", object()), "threshold", 0.7))
+        self._classifier_device = "cpu"
+        self._classifier_path: Path | None = None
+        self._classifier_max_length = 64
 
         self._attention_until: float = 0.0
 
@@ -314,11 +350,47 @@ class SpeechDirectionGate:
             device = "cpu"
 
         max_len = int(getattr(model_cfg, "max_length", 64))
-        self._classifier = DirectedIntentClassifier(
-            str(model_path),
-            device=device,
-            max_length=max(1, max_len),
+        self._classifier_path = model_path
+        self._classifier_max_length = max(1, max_len)
+        self._classifier = self._create_classifier_with_fallback(device=device)
+        return self._classifier
+
+    @staticmethod
+    def _is_cuda_oom(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "cuda out of memory",
+                "out of memory",
+                "failed to allocate memory",
+            )
         )
+
+    def _create_classifier(self, *, device: str) -> DirectedIntentClassifier:
+        if self._classifier_path is None:
+            raise RuntimeError("classifier path is not initialised")
+        classifier = DirectedIntentClassifier(
+            str(self._classifier_path),
+            device=device,
+            max_length=self._classifier_max_length,
+        )
+        self._classifier_device = device
+        return classifier
+
+    def _create_classifier_with_fallback(self, *, device: str) -> DirectedIntentClassifier:
+        try:
+            return self._create_classifier(device=device)
+        except Exception as exc:
+            if not device.startswith("cuda") or not self._is_cuda_oom(exc):
+                raise
+            log.warning(
+                "speech_gate: classifier CUDA initialisation ran out of memory; retrying on cpu"
+            )
+            return self._create_classifier(device="cpu")
+
+    def _retry_classifier_on_cpu(self) -> DirectedIntentClassifier:
+        self._classifier = self._create_classifier_with_fallback(device="cpu")
         return self._classifier
 
     @staticmethod
@@ -366,6 +438,95 @@ class SpeechDirectionGate:
             if re.search(rf"{re.escape(pattern)}\s*$", stripped):
                 return True
         return False
+
+    @staticmethod
+    def _strip_command_tail(text: str) -> str:
+        return text.strip(" \t\r\n,.;:!?-—()[]{}\"'")
+
+    def _strip_optional_local_fillers(self, text: str) -> str:
+        current = self._strip_command_tail(text)
+        if not current:
+            return ""
+
+        fillers = (
+            self.patterns.get("politeness_markers", set()) | _LOCAL_COMMAND_FILLERS
+        )
+        while current:
+            matched = False
+            for filler in sorted(fillers, key=len, reverse=True):
+                if not filler:
+                    continue
+                match = re.match(rf"^{re.escape(filler)}(?:\b|$)", current)
+                if match is None:
+                    continue
+                current = self._strip_command_tail(current[match.end() :])
+                matched = True
+                break
+            if not matched:
+                break
+        return current
+
+    def _find_command_tail_after_name(self, normalized_text: str) -> tuple[str, str] | None:
+        assistant_names = sorted(
+            self.patterns.get("assistant_names", set()),
+            key=len,
+            reverse=True,
+        )
+        for name in assistant_names:
+            if not name:
+                continue
+            for match in re.finditer(rf"\b{re.escape(name)}\b", normalized_text):
+                tail = self._strip_command_tail(normalized_text[match.end() :])
+                if tail:
+                    return name, tail
+        return None
+
+    def _match_local_command_phrase(self, tail: str, phrases: Iterable[str]) -> str | None:
+        for phrase in sorted(set(phrases), key=len, reverse=True):
+            if not phrase:
+                continue
+            match = re.match(rf"^{re.escape(phrase)}(?:\b|$)", tail)
+            if match is None:
+                continue
+            rest = self._strip_optional_local_fillers(tail[match.end() :])
+            if not rest:
+                return phrase
+        return None
+
+    def detect_local_command(self, text: str) -> LocalCommandMatch | None:
+        normalized = self._normalize(text)
+        if not normalized:
+            return None
+
+        name_and_tail = self._find_command_tail_after_name(normalized)
+        if name_and_tail is None:
+            return None
+        assistant_name, tail = name_and_tail
+        command_tail = self._strip_optional_local_fillers(tail)
+        if not command_tail:
+            return None
+
+        checks = (
+            ("mute", self.patterns.get("local_mute_commands", set()) | _LOCAL_MUTE_COMMANDS),
+            (
+                "standby",
+                self.patterns.get("local_standby_commands", set()) | _LOCAL_STANDBY_COMMANDS,
+            ),
+            (
+                "stop_generation",
+                self.patterns.get("local_abort_commands", set()) | _LOCAL_ABORT_COMMANDS,
+            ),
+            ("normal", self.patterns.get("local_normal_commands", set()) | _LOCAL_NORMAL_COMMANDS),
+        )
+        for action, phrases in checks:
+            phrase = self._match_local_command_phrase(command_tail, phrases)
+            if phrase:
+                return LocalCommandMatch(
+                    action=action,
+                    assistant_name=assistant_name,
+                    phrase=phrase,
+                )
+        return None
 
     def _extend_attention(self, now: float) -> None:
         self._attention_until = max(self._attention_until, now) + self.attention_extension
@@ -417,7 +578,16 @@ class SpeechDirectionGate:
 
         try:
             classifier = self._load_classifier()
-            ml_score = classifier.predict_directed_prob(normalized)
+            try:
+                ml_score = classifier.predict_directed_prob(normalized)
+            except Exception as exc:
+                if not self._classifier_device.startswith("cuda") or not self._is_cuda_oom(exc):
+                    raise
+                log.warning(
+                    "speech_gate: classifier CUDA inference ran out of memory; retrying on cpu"
+                )
+                classifier = self._retry_classifier_on_cpu()
+                ml_score = classifier.predict_directed_prob(normalized)
         except Exception as exc:
             if not self._classifier_failed_logged:
                 log.warning("speech_gate: classifier unavailable, using rules-only fallback: %s", exc)
@@ -446,4 +616,10 @@ class SpeechDirectionGate:
         return GateDecision(False, rule_score, ml_score, final_score, continuation, "low_score")
 
 
-__all__ = ["GateDecision", "SpeechDirectionGate", "SpeechGateMode", "DirectedIntentClassifier"]
+__all__ = [
+    "DirectedIntentClassifier",
+    "GateDecision",
+    "LocalCommandMatch",
+    "SpeechDirectionGate",
+    "SpeechGateMode",
+]

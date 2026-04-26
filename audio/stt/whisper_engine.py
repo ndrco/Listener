@@ -36,6 +36,9 @@ class WhisperEngine:
         self._resamplers: Dict[int, StreamingResampler] = {}
         self._transcribe_options = self._build_transcribe_options(config)
         self._blacklist: Set[str] = set()
+        self._requested_device = str(config.device or "auto")
+        self._active_device = self._requested_device
+        self._active_compute_type = str(config.compute_type) if config.compute_type else None
 
         if self._enabled:
             self._initialise_model()
@@ -52,9 +55,73 @@ class WhisperEngine:
 
         cfg = self._config
         model_name = self._resolve_model_name(cfg.model or "small")
+        init_kwargs = self._build_init_kwargs(cfg)
 
+        try:
+            self._model = WhisperModel(model_name, **init_kwargs)
+        except Exception as exc:  # pragma: no cover - runtime error surfaces to caller
+            if self._should_retry_on_cpu(exc, init_kwargs):
+                fallback_kwargs = self._build_init_kwargs(cfg, device_override="cpu")
+                log.warning(
+                    "audio.stt.whisper: CUDA model load ran out of memory; "
+                    "retrying on CPU (model=%s, compute_type=%s)",
+                    model_name,
+                    init_kwargs.get("compute_type", "default"),
+                )
+                try:
+                    self._model = WhisperModel(model_name, **fallback_kwargs)
+                except Exception as fallback_exc:  # pragma: no cover - runtime error surfaces
+                    raise RuntimeError(
+                        "audio.stt.whisper: failed to load Whisper model "
+                        f"'{model_name}' after CUDA OOM fallback to CPU with args {fallback_kwargs}"
+                    ) from fallback_exc
+                self._active_device = str(fallback_kwargs.get("device", "cpu"))
+                self._active_compute_type = (
+                    str(fallback_kwargs["compute_type"])
+                    if "compute_type" in fallback_kwargs
+                    else None
+                )
+            else:
+                raise RuntimeError(
+                    f"audio.stt.whisper: failed to load Whisper model '{model_name}' with args {init_kwargs}"
+                ) from exc
+        else:
+            self._active_device = str(init_kwargs.get("device", self._requested_device))
+            self._active_compute_type = (
+                str(init_kwargs["compute_type"]) if "compute_type" in init_kwargs else None
+            )
+
+        log.debug(
+            "audio.stt.whisper: model %s initialised (device=%s, compute_type=%s)",
+            model_name,
+            self._active_device,
+            self._active_compute_type or "default",
+        )
+
+    @staticmethod
+    def _should_retry_on_cpu(exc: Exception, init_kwargs: Dict[str, Any]) -> bool:
+        device = str(init_kwargs.get("device", "") or "").strip().lower()
+        if not device.startswith("cuda"):
+            return False
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "out of memory",
+                "cuda failed with error out of memory",
+                "cuda out of memory",
+                "failed to allocate memory",
+            )
+        )
+
+    @staticmethod
+    def _build_init_kwargs(
+        cfg: WhisperSttCfg,
+        *,
+        device_override: str | None = None,
+    ) -> Dict[str, Any]:
         init_kwargs: Dict[str, Any] = {
-            "device": cfg.device or "auto",
+            "device": device_override or cfg.device or "auto",
         }
 
         if cfg.compute_type:
@@ -82,20 +149,15 @@ class WhisperEngine:
             else:
                 if workers_value > 0:
                     init_kwargs["num_workers"] = workers_value
+        return init_kwargs
 
-        try:
-            self._model = WhisperModel(model_name, **init_kwargs)
-        except Exception as exc:  # pragma: no cover - runtime error surfaces to caller
-            raise RuntimeError(
-                f"audio.stt.whisper: failed to load Whisper model '{model_name}' with args {init_kwargs}"
-            ) from exc
+    @property
+    def active_device(self) -> str:
+        return self._active_device
 
-        log.debug(
-            "audio.stt.whisper: model %s initialised (device=%s, compute_type=%s)",
-            model_name,
-            init_kwargs.get("device"),
-            init_kwargs.get("compute_type", "default"),
-        )
+    @property
+    def active_compute_type(self) -> str | None:
+        return self._active_compute_type
 
     @staticmethod
     def _resolve_model_name(model_name: str) -> str:

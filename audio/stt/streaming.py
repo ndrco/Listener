@@ -195,6 +195,7 @@ class WhisperStreamingTranscriber:
         self._current_metadata = metadata
         self._current_audio = segment.data
         try:
+            engine = self._engine
             results = await self._transcribe_in_executor(
                 segment.data,
                 sample_rate=segment.sample_rate,
@@ -209,8 +210,12 @@ class WhisperStreamingTranscriber:
                 segment.sample_rate,
                 len(segment.data),
                 getattr(self._stt_config, "model", None),
-                getattr(self._stt_config, "device", None),
-                getattr(self._stt_config, "compute_type", None),
+                getattr(engine, "active_device", getattr(self._stt_config, "device", None)),
+                getattr(
+                    engine,
+                    "active_compute_type",
+                    getattr(self._stt_config, "compute_type", None),
+                ),
             )
             self._reset_state()
             return

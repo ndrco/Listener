@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from pathlib import Path
 import sys
 
@@ -13,6 +14,8 @@ if str(ROOT) not in sys.path:
 
 from core.bus import Event  # noqa: E402
 from core.config import cfg  # noqa: E402
+import agents.speech_gate_agent as speech_gate_agent_module  # noqa: E402
+import llm.speech_gate as speech_gate_module  # noqa: E402
 from llm.speech_gate import SpeechDirectionGate, SpeechGateMode  # noqa: E402
 from agents.speech_gate_agent import SpeechGateAgent  # noqa: E402
 
@@ -78,6 +81,107 @@ def test_speech_gate_ml_branch_used_when_rules_not_enough():
     assert decision.rule_score == pytest.approx(0.3)
     assert decision.ml_score == pytest.approx(0.9)
     assert decision.final_score == pytest.approx(0.66, abs=1e-6)
+
+
+def test_speech_gate_classifier_falls_back_to_cpu_on_cuda_oom_during_load(
+    monkeypatch, tmp_path, caplog
+):
+    model_dir = tmp_path / "gate-model"
+    model_dir.mkdir()
+    calls: list[str] = []
+
+    class FakeClassifier:
+        def __init__(self, model_path: str, device: str = "cpu", *, max_length: int = 64) -> None:
+            del model_path, max_length
+            calls.append(device)
+            self.device = device
+            if device == "cuda":
+                raise RuntimeError("CUDA out of memory")
+
+    gate = _build_gate()
+    gate.root_path = tmp_path
+    gate._classifier = None
+    gate._classifier_disabled = False
+
+    old_path = cfg.speech_gate.model.path
+    old_device = cfg.speech_gate.model.device
+    old_max_length = cfg.speech_gate.model.max_length
+    cfg.speech_gate.model.path = str(model_dir)
+    cfg.speech_gate.model.device = "cuda"
+    cfg.speech_gate.model.max_length = 64
+    monkeypatch.setattr(speech_gate_module, "DirectedIntentClassifier", FakeClassifier)
+    caplog.set_level(logging.WARNING, logger=speech_gate_module.log.name)
+    try:
+        classifier = gate._load_classifier()  # pylint: disable=protected-access
+    finally:
+        cfg.speech_gate.model.path = old_path
+        cfg.speech_gate.model.device = old_device
+        cfg.speech_gate.model.max_length = old_max_length
+
+    assert calls == ["cuda", "cpu"]
+    assert classifier.device == "cpu"
+    assert gate._classifier_device == "cpu"  # pylint: disable=protected-access
+    assert any(
+        "classifier CUDA initialisation ran out of memory; retrying on cpu"
+        in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_speech_gate_classifier_falls_back_to_cpu_on_cuda_oom_during_inference(
+    monkeypatch, tmp_path, caplog
+):
+    model_dir = tmp_path / "gate-model"
+    model_dir.mkdir()
+    calls: list[str] = []
+
+    class FakeClassifier:
+        def __init__(self, model_path: str, device: str = "cpu", *, max_length: int = 64) -> None:
+            del model_path, max_length
+            calls.append(device)
+            self.device = device
+
+        def predict_directed_prob(self, text: str) -> float:
+            assert isinstance(text, str)
+            if self.device == "cuda":
+                raise RuntimeError("CUDA out of memory")
+            return 0.9
+
+    gate = _build_gate()
+    gate.patterns["assistant_names"] = set()
+    gate.root_path = tmp_path
+    gate._classifier = None
+    gate._classifier_disabled = False
+
+    old_path = cfg.speech_gate.model.path
+    old_device = cfg.speech_gate.model.device
+    old_max_length = cfg.speech_gate.model.max_length
+    cfg.speech_gate.model.path = str(model_dir)
+    cfg.speech_gate.model.device = "cuda"
+    cfg.speech_gate.model.max_length = 64
+    monkeypatch.setattr(speech_gate_module, "DirectedIntentClassifier", FakeClassifier)
+    caplog.set_level(logging.WARNING, logger=speech_gate_module.log.name)
+    try:
+        decision = gate.should_allow("Расскажи про погоду")
+    finally:
+        cfg.speech_gate.model.path = old_path
+        cfg.speech_gate.model.device = old_device
+        cfg.speech_gate.model.max_length = old_max_length
+
+    assert calls == ["cuda", "cpu"]
+    assert decision.allowed is True
+    assert decision.reason == "ml"
+    assert decision.ml_score == pytest.approx(0.9)
+    assert gate._classifier_device == "cpu"  # pylint: disable=protected-access
+    assert any(
+        "classifier CUDA inference ran out of memory; retrying on cpu"
+        in record.getMessage()
+        for record in caplog.records
+    )
+    assert not any(
+        "classifier unavailable, using rules-only fallback" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_speech_gate_fallback_drops_weak_phrase_without_model():
@@ -230,6 +334,77 @@ def test_speech_gate_ignores_assistant_names_from_patterns_file(tmp_path):
     assert gate.should_allow("Привет, legacy").allowed is False
 
 
+def test_speech_gate_detects_local_commands_without_swallowing_regular_prompt():
+    gate = _build_gate()
+
+    mute = gate.detect_local_command("Kissa, пожалуйста, помолчи")
+    assert mute is not None
+    assert mute.action == "mute"
+    assert mute.assistant_name == "kissa"
+    assert mute.phrase == "помолчи"
+
+    standby = gate.detect_local_command("Kissa, не слушай")
+    assert standby is not None
+    assert standby.action == "standby"
+
+    stop = gate.detect_local_command("Kissa, стоп")
+    assert stop is not None
+    assert stop.action == "stop_generation"
+
+    assert gate.detect_local_command("Kissa, ответь какая погода") is None
+    assert gate.detect_local_command("Kissa, слушай, какая сегодня погода") is None
+
+
+def test_speech_gate_agent_loads_identity_once_on_start(monkeypatch):
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                del topic, payload
+
+        real_factory = speech_gate_agent_module.SpeechDirectionGate.from_config
+        calls = 0
+
+        def _wrapped_factory():
+            nonlocal calls
+            calls += 1
+            return real_factory()
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        monkeypatch.setattr(
+            speech_gate_agent_module.SpeechDirectionGate,
+            "from_config",
+            staticmethod(_wrapped_factory),
+        )
+        try:
+            agent = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
+            await agent.start()
+            await agent.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+
+        assert calls == 1
+
+    asyncio.run(_runner())
+
+
 def test_speech_gate_agent_publishes_filtered_topic():
     async def _runner() -> None:
         class DummyBus:
@@ -273,6 +448,131 @@ def test_speech_gate_agent_publishes_filtered_topic():
         published_payload = [payload for topic, payload in bus.events if topic == "llm/accepted_phrase"][0]
         assert published_payload["text"] == "Привет, kissa"
         assert "speech_gate_reason" in published_payload
+
+    asyncio.run(_runner())
+
+
+def test_speech_gate_agent_handles_local_voice_commands():
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        try:
+            bus = DummyBus()
+            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            await agent.start()
+            try:
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, помолчи"})
+                )
+                assert agent.get_status()["mode"] == "mute"
+                assert bus.events == []
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, говори"})
+                )
+                assert agent.get_status()["mode"] == "normal"
+                assert bus.events == []
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, ответь какая погода"})
+                )
+                assert len(bus.events) == 1
+                assert bus.events[0][0] == "llm/accepted_phrase"
+                assert bus.events[0][1]["text"] == "Kissa, ответь какая погода"
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, выключись"})
+                )
+                status = agent.get_status()
+                assert status["mode"] == "standby"
+                assert status["temporary"] is False
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, говори"})
+                )
+                assert agent.get_status()["mode"] == "normal"
+                assert len(bus.events) == 1
+            finally:
+                await agent.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+
+    asyncio.run(_runner())
+
+
+def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        calls: list[str] = []
+
+        async def _fake_abort(session_key: str):
+            calls.append(session_key)
+            return {"ok": True, "aborted": True, "runIds": ["run-1"]}
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        old_session_key = cfg.openclaw.session_key
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        cfg.openclaw.session_key = "voice-main"
+        monkeypatch.setattr(speech_gate_agent_module, "abort_openclaw_chat_session", _fake_abort)
+        try:
+            bus = DummyBus()
+            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            await agent.start()
+            try:
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, стоп"})
+                )
+            finally:
+                await agent.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+            cfg.openclaw.session_key = old_session_key
+
+        assert calls == ["voice-main"]
+        assert bus.events == []
 
     asyncio.run(_runner())
 
