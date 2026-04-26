@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -108,6 +109,52 @@ def _decode_json(data: bytes) -> dict[str, Any]:
     return value if isinstance(value, dict) else {"ok": False, "error": "invalid_json_response"}
 
 
+def format_speech_gate_status(speech_gate: dict[str, Any]) -> str:
+    mode = speech_gate.get("mode", "unknown")
+    temporary = bool(speech_gate.get("temporary"))
+    state = "temporary" if temporary else "permanent"
+    parts = [f"speech_gate mode={mode}", f"state={state}"]
+
+    if temporary:
+        expires_in = _format_seconds(speech_gate.get("expires_in_seconds"))
+        expires_at = _format_timestamp(speech_gate.get("expires_at"))
+        restore = speech_gate.get("restore_mode") or "-"
+        parts.extend(
+            [
+                f"expires_in={expires_in}",
+                f"expires_at={expires_at}",
+                f"restore={restore}",
+            ]
+        )
+    else:
+        parts.extend(["expires_in=-", "expires_at=-", "restore=-"])
+
+    source = speech_gate.get("source")
+    if source:
+        parts.append(f"source={source}")
+    reason = str(speech_gate.get("reason") or "")
+    if reason:
+        parts.append(f"reason={json.dumps(reason, ensure_ascii=False)}")
+    return " ".join(parts)
+
+
+def _format_seconds(value: Any) -> str:
+    try:
+        return f"{float(value):.1f}s"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _format_timestamp(value: Any) -> str:
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if timestamp <= 0:
+        return "-"
+    return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds")
+
+
 def _print_response(data: dict[str, Any], *, raw_json: bool) -> None:
     if raw_json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -120,14 +167,7 @@ def _print_response(data: dict[str, Any], *, raw_json: bool) -> None:
     if not isinstance(speech_gate, dict):
         print("ok")
         return
-    mode = speech_gate.get("mode")
-    temporary = bool(speech_gate.get("temporary"))
-    expires_in = speech_gate.get("expires_in_seconds")
-    restore = speech_gate.get("restore_mode")
-    suffix = ""
-    if temporary and expires_in is not None:
-        suffix = f" temporary expires_in={float(expires_in):.1f}s restore={restore}"
-    print(f"speech_gate mode={mode}{suffix}")
+    print(format_speech_gate_status(speech_gate))
 
 
 def main(argv: list[str] | None = None) -> int:

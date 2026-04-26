@@ -197,6 +197,9 @@ When `main.py` is running, SpeechGate modes can be changed without restarting:
 .venv/bin/python utils/listenerctl.py normal
 ```
 
+The status line includes mode, temporary/permanent state, expiry time, and
+restore mode.
+
 HTTP examples:
 
 ```bash

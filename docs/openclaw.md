@@ -112,12 +112,13 @@ cat >> "$OPENCLAW_WORKSPACE/TOOLS.md" <<EOF
 ### Listener
 - LISTENER_HOME=$(pwd)
 - Control URL: http://127.0.0.1:18790
-- Use: \$LISTENER_HOME/.venv/bin/python \$LISTENER_HOME/utils/listenerctl.py
+- Use: $OPENCLAW_WORKSPACE/skills/listener-control/scripts/listener-control
 EOF
 ```
 
 Run the command from the Listener repository root so `LISTENER_HOME` is written
-as the current project path.
+as the current project path. The skill helper also falls back to env variables,
+Listener `config/config.json`, and common local paths.
 
 Optionally add a short persistent note to OpenClaw `AGENTS.md` so the agent
 recognizes that some chat messages may arrive from Listener as voice
@@ -150,6 +151,14 @@ EOF
 
 - `LISTENER_CONTROL_URL`
 - `LISTENER_CONTROL_TOKEN`
+
+Its human-readable output includes the current mode, whether it is temporary or
+permanent, the expiry time when temporary, and the restore mode.
+
+The OpenClaw skill helper (`openclaw/skills/listener-control/scripts/listener-control`)
+also discovers `LISTENER_HOME`, control URL, and control token from env,
+OpenClaw `TOOLS.md`, or Listener `config/config.json` before delegating to
+`listenerctl.py`.
 
 If the control API is exposed on anything other than loopback, configure a
 non-empty `control.token`.

@@ -1,47 +1,51 @@
 ---
 name: listener-control
-description: Control the local Listener voice runtime SpeechGate mode via listenerctl. Use when the user asks OpenClaw to change listening behavior, quiet mode, conversation mode, standby, or normal voice routing.
+description: Control the local Listener voice runtime SpeechGate mode via listenerctl. Use when the user asks OpenClaw to change listening behavior, quiet mode, conversation mode, standby, normal voice routing, or current listening status.
 ---
 
 # Listener Control
 
-Use this skill when the user wants to change how Listener accepts voice input.
+Use this skill when the user wants to change or inspect how Listener accepts voice input.
 
-## Commands
+## Preferred Command
 
-Assume `LISTENER_HOME` points to the Listener repo. If it is not set, check the
-workspace `TOOLS.md` for the local Listener path.
+Use the bundled helper script `scripts/listener-control` (resolve relative to this SKILL.md).
+It discovers:
+
+- `LISTENER_HOME` from env, OpenClaw workspace `TOOLS.md`, the source skill path, or common local paths.
+- control URL from `LISTENER_CONTROL_URL`, `TOOLS.md` (`Control URL:`), or Listener `config/config.json`.
+- control token from `LISTENER_CONTROL_TOKEN`, `TOOLS.md`, or Listener `config/config.json`.
+
+Examples:
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py status
+scripts/listener-control status
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py normal
+scripts/listener-control normal --reason "normal listening"
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py mute --reason "quiet mode"
+scripts/listener-control mute --reason "quiet mode"
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py chatty --ttl 600 --reason "conversation mode"
+scripts/listener-control chatty --ttl 600 --reason "conversation mode"
 ```
 
 ```bash
-$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py standby --ttl 300 --reason "standby requested"
+scripts/listener-control standby --reason "standby requested"
 ```
 
-The longer canonical commands also work, e.g.
-`listenerctl.py speech-gate set-mode chatty` and `listenerctl.py speech-gate status`.
+The helper delegates to `listenerctl.py`. Direct commands also work when `LISTENER_HOME` is known, e.g. `$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py status`.
 
 ## Intent Mapping
 
 - Conversation mode, listen to everything, no wake name required, active listening on -> `chatty --ttl 600` unless the user gives a duration.
 - Quiet mode, name-only mode, stop listening to background speech, active listening off -> `mute`.
-- Do not listen, stop listening completely, standby mode, go to standby -> `standby --ttl 300` unless the user gives a duration.
+- Do not listen, stop listening completely, standby mode, go deaf -> `standby`. If the user gives a duration you can use `--ttl`, for example `--ttl 600`.
 - Normal mode, come back, listen normally, leave active listening mode -> `normal`.
-- If the user asks about listening activity/status, run `speech-gate status` first and report the current mode.
+- If the user asks about listening activity/status, run `status` first and report the current mode.
 
-After changing mode, run `speech-gate status` and summarize the resulting mode
-briefly. Do not use `standby` without `--ttl`.
+After changing mode, run `status` and summarize the resulting mode briefly. The CLI output includes mode, permanent/temporary state, expiry time, and restore mode. Do not use `chatty` without `--ttl`.

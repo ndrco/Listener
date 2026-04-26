@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""OpenClaw-friendly wrapper for Listener's listenerctl.py.
+
+Discovers LISTENER_HOME plus control URL/token from env, OpenClaw TOOLS.md,
+or Listener config, then delegates to utils/listenerctl.py.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+DEFAULT_CONTROL_URL = "http://127.0.0.1:18790"
+
+
+_KEY_VALUE_RE = re.compile(r"^\s*(?:[-*]\s*)?(?P<key>[A-Z0-9_]+)\s*=\s*(?P<value>.+?)\s*$")
+_CONTROL_URL_RE = re.compile(r"^\s*(?:[-*]\s*)?Control URL\s*:\s*(?P<value>\S+)\s*$", re.IGNORECASE)
+_CONTROL_TOKEN_RE = re.compile(r"^\s*(?:[-*]\s*)?Control token\s*:\s*(?P<value>\S+)\s*$", re.IGNORECASE)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    workspace = discover_openclaw_workspace()
+    tools = parse_tools_md(workspace / "TOOLS.md") if workspace else {}
+    listener_home = discover_listener_home(tools)
+    if listener_home is None:
+        print(
+            "error: Listener home not found; set LISTENER_HOME or add LISTENER_HOME=/path/to/Listener to TOOLS.md",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = read_listener_config(listener_home)
+    control_url = discover_control_url(tools, config)
+    token = discover_control_token(tools, config)
+
+    listenerctl = listener_home / "utils" / "listenerctl.py"
+    if not listenerctl.is_file():
+        print(f"error: listenerctl.py not found at {listenerctl}", file=sys.stderr)
+        return 1
+
+    python = listener_home / ".venv" / "bin" / "python"
+    executable = str(python) if python.exists() else sys.executable
+
+    env = os.environ.copy()
+    env["LISTENER_HOME"] = str(listener_home)
+    env.setdefault("LISTENER_CONTROL_URL", control_url)
+    if token:
+        env.setdefault("LISTENER_CONTROL_TOKEN", token)
+
+    return subprocess.call([executable, str(listenerctl), *args], env=env)
+
+
+def discover_openclaw_workspace() -> Path | None:
+    env_workspace = os.environ.get("OPENCLAW_WORKSPACE")
+    if env_workspace:
+        return Path(env_workspace).expanduser()
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "TOOLS.md").is_file() or (parent / "AGENTS.md").is_file():
+            return parent
+
+    fallback = Path.home() / ".openclaw" / "workspace"
+    return fallback if fallback.exists() else None
+
+
+def parse_tools_md(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key_value = _KEY_VALUE_RE.match(line)
+        if key_value:
+            values[key_value.group("key")] = clean_value(key_value.group("value"))
+            continue
+        control_url = _CONTROL_URL_RE.match(line)
+        if control_url:
+            values["LISTENER_CONTROL_URL"] = clean_value(control_url.group("value"))
+            continue
+        control_token = _CONTROL_TOKEN_RE.match(line)
+        if control_token:
+            values["LISTENER_CONTROL_TOKEN"] = clean_value(control_token.group("value"))
+    return values
+
+
+def clean_value(value: str) -> str:
+    return value.strip().strip("`'\"")
+
+
+def discover_listener_home(tools: dict[str, str]) -> Path | None:
+    candidates = [
+        os.environ.get("LISTENER_HOME"),
+        tools.get("LISTENER_HOME"),
+    ]
+
+    here = Path(__file__).resolve()
+    candidates.extend(str(parent) for parent in here.parents)
+    candidates.extend(
+        [
+            str(Path.cwd()),
+            str(Path.home() / "src" / "Listener"),
+            str(Path.home() / "Listener"),
+        ]
+    )
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser().resolve()
+        if (path / "utils" / "listenerctl.py").is_file():
+            return path
+    return None
+
+
+def read_listener_config(listener_home: Path) -> dict[str, Any]:
+    path = listener_home / "config" / "config.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def discover_control_url(tools: dict[str, str], config: dict[str, Any]) -> str:
+    env_value = os.environ.get("LISTENER_CONTROL_URL")
+    if env_value:
+        return env_value
+    tool_value = tools.get("LISTENER_CONTROL_URL")
+    if tool_value:
+        return tool_value
+
+    control = config.get("control") if isinstance(config.get("control"), dict) else {}
+    host = str(control.get("host") or "127.0.0.1")
+    port = control.get("port") or 18790
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{int(port)}"
+
+
+def discover_control_token(tools: dict[str, str], config: dict[str, Any]) -> str | None:
+    env_value = os.environ.get("LISTENER_CONTROL_TOKEN")
+    if env_value:
+        return env_value
+    tool_value = tools.get("LISTENER_CONTROL_TOKEN")
+    if tool_value:
+        return tool_value
+
+    control = config.get("control") if isinstance(config.get("control"), dict) else {}
+    token = control.get("token")
+    text = str(token).strip() if token not in (None, "") else ""
+    return text or None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
