@@ -26,10 +26,8 @@
     "attention_window_seconds": 10.0,
     "attention_extension_seconds": 5.0,
     "patterns_file": "config/speech_gate_patterns.json",
-    "assistant_names": [
-      "ассистент",
-      "помощник"
-     ],
+    "identity_file": null,
+    "assistant_names": [],
     "command_verbs": [
       "включи",
       "скажи"

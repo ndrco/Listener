@@ -8,7 +8,7 @@
 - `SpeechGateAgent` решает, действительно ли фраза адресована ассистенту.
 - `OpenClawInputAgent` пересылает прошедшие фразы в `openclaw gateway call chat.send`.
 
-Базовая конфигурация лежит в [config/config.json](/home/re/src/Listener/config/config.json:1).
+Базовая конфигурация лежит в [config/config.json](config/config.json).
 
 ## Пайплайн
 
@@ -27,7 +27,7 @@ Microphone -> AudioProcessor -> BufferedSpeechWriter -> WhisperStreamingTranscri
 - VAD
 - AGC
 
-Подробности по устройству подсистемы есть в [docs/audio.md](/home/re/src/Listener/docs/audio.md:1) и [docs/stt.md](/home/re/src/Listener/docs/stt.md:1).
+Подробности по устройству подсистемы есть в [docs/audio.md](docs/audio.md) и [docs/stt.md](docs/stt.md).
 
 ## Быстрый старт
 
@@ -67,7 +67,7 @@ pytest -q
 - `openclaw`: параметры отправки финальных реплик в OpenClaw.
 - `events`: топики внутренней шины событий.
 
-Windows-ориентированный пример вынесен в [config/config.windows.example.json](/home/re/src/Listener/config/config.windows.example.json:1).
+Windows-ориентированный пример вынесен в [config/config.windows.example.json](config/config.windows.example.json).
 
 ## Модели
 

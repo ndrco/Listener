@@ -1,7 +1,7 @@
 {
   "openclaw": {
     "enabled": true,
-    "command": "wsl -d Ubuntu-24.04 /home/andre/.npm-global/bin/openclaw"
+    "command": "wsl -d <DistroName> -- openclaw"
   },
   "audio": {
     "playback": {

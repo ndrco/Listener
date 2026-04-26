@@ -120,13 +120,14 @@ false`) возвращается пустой список.
 Перед отправкой распознанной речи в LLM срабатывает двухэтапный гейт
 `llm.speech_gate.SpeechDirectionGate`:
 
-* **Правила + скоринг.** Текст проверяется на имя ассистента (киса/кисса/kissa)
-  и маркеры обращения (командные глаголы, вопросительные и модальные слова,
-  вежливые формулы). Признаки читаются один раз при старте из файла
-  `speech_gate.patterns_file` (например, `config/speech_gate_patterns.json`),
-  при его отсутствии используются inline-списки из конфигурации. Если правило
-  набирает порог `speech_gate.rules_threshold` (0.7 по умолчанию), запрос
-  считается адресованным и пропускается без ML-проверки.
+* **Правила + скоринг.** Текст проверяется на имя ассистента из OpenClaw
+  identity-файла (строки `Name:` / `Имя:`) и маркеры обращения: командные глаголы,
+  вопросительные и модальные слова, вежливые формулы. Маркеры читаются один раз
+  при старте из файла `speech_gate.patterns_file` (например,
+  `config/speech_gate_patterns.json`), при его отсутствии используются
+  inline-списки из конфигурации. Если правило набирает порог
+  `speech_gate.rules_threshold` (0.7 по умолчанию), запрос считается
+  адресованным и пропускается без ML-проверки.
 * **ML-классификатор.** Для сомнительных реплик запускается модель
   `models/directed-ruElectra-small-fp16` (параметры и устройство задаются в
   `speech_gate.model`). Итоговый скор рассчитывается как
@@ -164,7 +165,8 @@ false`) возвращается пустой список.
 | `final_threshold` | Итоговый порог после смешивания правил и ML (`0.6 * ml + 0.4 * rules`). Реплики ниже порога игнорируются. | `0.5` |
 | `attention_window_seconds` | Длительность «attention mode» после успешного обращения, в течение которой гейт пропускает реплики без фильтров. | `8.0` |
 | `attention_extension_seconds` | На сколько секунд продлевается окно внимания при обнаружении маркеров продолжения («и ещё», «а также» и т. п.). | `3.0` |
-| `patterns_file` | Путь до JSON со списками паттернов (`assistant_names`, `command_verbs`, `continuation_patterns`, и др.). Пути считаются от корня проекта. | `"config/speech_gate_patterns.json"` |
+| `patterns_file` | Путь до JSON со списками маркеров (`command_verbs`, `continuation_patterns`, и др.). Пути считаются от корня проекта. `assistant_names` в этом файле игнорируется. | `"config/speech_gate_patterns.json"` |
+| `identity_file` | Путь до OpenClaw identity Markdown. `null` или `"auto"` включает автообнаружение через `OPENCLAW_IDENTITY_FILE`, `OPENCLAW_WORKSPACE`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, `~/.openclaw/openclaw.json` и профильные каталоги `~/.openclaw-*`. Явный относительный путь считается от корня Listener. | `null` |
 | `model.path` | Каталог модели `directed-ruElectra-small-fp16` для классификатора направленности речи. | `"models/directed-ruElectra-small-fp16"` |
 | `model.device` | Устройство для инференса классификатора (`cpu`, `cuda`, `cuda:0` и т. п.). | `"cpu"` |
 | `model.threshold` | Порог вероятности для ответа модели (до смешивания с правилом). | `0.7` |
@@ -176,7 +178,6 @@ false`) возвращается пустой список.
 
 ```json
 {
-  "assistant_names": ["кисса", "киса", "kissa"],
   "command_verbs": ["включи", "останови", "покажи"],
   "politeness_markers": ["пожалуйста", "будь добра"],
   "question_markers": ["как", "почему", "зачем"],
@@ -185,11 +186,35 @@ false`) возвращается пустой список.
 }
 ```
 
+Имя ассистента не хранится в `speech_gate_patterns.json`: поле
+`assistant_names` в этом файле игнорируется. Основной источник имени:
+`IDENTITY.md` в workspace OpenClaw. Listener пытается найти его автоматически:
+сначала через переменные окружения `OPENCLAW_IDENTITY_FILE`, `OPENCLAW_WORKSPACE`,
+`OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, затем через конфиги
+`~/.openclaw/openclaw.json`, `~/.openclaw-dev/openclaw.json` и
+`~/.openclaw-*/openclaw.json`. Если OpenClaw хранит workspace нестандартно,
+задайте путь вручную:
+
+```json
+{
+  "speech_gate": {
+    "identity_file": "/path/to/openclaw/workspace/IDENTITY.md"
+  }
+}
+```
+
+Пример содержимого identity-файла:
+
+```markdown
+Name: Kissa
+Имя: Кисса
+```
+
 Можно опустить любые поля: гейт объединяет найденные в файле списки с
 дополнительными inline-паттернами из `config/config.json`, если они там заданы, и
 использует объединённый набор для скоринга. Если файл по указанному пути не
 найдён или не читается, в лог пишется предупреждение, а гейт продолжает работу
-только с inline-паттернами из `config/config.json`.
+только с inline-паттернами из `config/config.json` и именем из identity-файла.
 
 ### Параметры исполнения
 

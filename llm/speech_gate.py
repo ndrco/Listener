@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ except Exception:  # pragma: no cover - import availability depends on environme
 from core.config import cfg
 
 log = logging.getLogger(__name__)
+_IDENTITY_NAME_RE = re.compile(r"^\s*(Name|Имя)\s*[:=\-—]\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class SpeechGateMode(str, Enum):
@@ -111,6 +113,7 @@ class SpeechDirectionGate:
             return {str(v).strip().lower() for v in values or [] if str(v).strip()}
 
         file_groups = self._load_patterns_from_file(getattr(sg_cfg, "patterns_file", None))
+        identity_names = self._load_identity_names(getattr(sg_cfg, "identity_file", None))
         groups = {
             "assistant_names": _as_set(getattr(sg_cfg, "assistant_names", None)),
             "command_verbs": _as_set(getattr(sg_cfg, "command_verbs", None)),
@@ -121,6 +124,7 @@ class SpeechDirectionGate:
         }
         for kind, values in file_groups.items():
             groups.setdefault(kind, set()).update(values)
+        groups.setdefault("assistant_names", set()).update(identity_names)
         return {kind: values for kind, values in groups.items() if values}
 
     def _load_patterns_from_file(self, path_str: str | None) -> dict[str, set[str]]:
@@ -141,6 +145,13 @@ class SpeechDirectionGate:
                 return {}
             cleaned: dict[str, set[str]] = {}
             for key, values in data.items():
+                if key == "assistant_names":
+                    log.warning(
+                        "speech_gate: assistant_names in %s are ignored; use %s instead",
+                        path,
+                        self._identity_path_display(),
+                    )
+                    continue
                 if not isinstance(values, list):
                     continue
                 normalized = {str(item).strip().lower() for item in values if str(item).strip()}
@@ -150,6 +161,126 @@ class SpeechDirectionGate:
         except Exception as exc:
             log.warning("speech_gate: failed to read patterns file %s: %s", path, exc)
             return {}
+
+    def _load_identity_names(self, path_str: str | None) -> set[str]:
+        path = self._resolve_identity_path(path_str)
+        if path is None:
+            return set()
+        try:
+            content = path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            log.info("speech_gate: identity file not found: %s", path)
+            return set()
+        except OSError as exc:
+            log.warning("speech_gate: failed to read identity file %s: %s", path, exc)
+            return set()
+
+        names: set[str] = set()
+        for raw_line in content.splitlines():
+            names.update(self._parse_identity_line(raw_line))
+        if names:
+            log.info("speech_gate: assistant names loaded from %s (%d)", path, len(names))
+        return names
+
+    def _resolve_identity_path(self, path_str: str | None) -> Path | None:
+        if path_str and str(path_str).strip().lower() != "auto":
+            path = Path(str(path_str)).expanduser()
+            if not path.is_absolute():
+                path = self.root_path / path
+            return path
+
+        for candidate in self._discover_openclaw_identity_paths():
+            if candidate.is_file():
+                return candidate
+        log.info("speech_gate: OpenClaw identity file not found; set speech_gate.identity_file")
+        return None
+
+    def _discover_openclaw_identity_paths(self) -> list[Path]:
+        candidates: list[Path] = []
+
+        direct = os.environ.get("OPENCLAW_IDENTITY_FILE")
+        if direct:
+            candidates.append(Path(direct).expanduser())
+
+        workspace = os.environ.get("OPENCLAW_WORKSPACE")
+        if workspace:
+            candidates.append(Path(workspace).expanduser() / "IDENTITY.md")
+
+        state_dir = os.environ.get("OPENCLAW_STATE_DIR")
+        if state_dir:
+            candidates.append(Path(state_dir).expanduser() / "workspace" / "IDENTITY.md")
+
+        config_paths: list[Path] = []
+        config_env = os.environ.get("OPENCLAW_CONFIG_PATH")
+        if config_env:
+            config_paths.append(Path(config_env).expanduser())
+        home = Path.home()
+        config_paths.append(home / ".openclaw" / "openclaw.json")
+        config_paths.append(home / ".openclaw-dev" / "openclaw.json")
+        config_paths.extend(sorted(home.glob(".openclaw-*/openclaw.json")))
+
+        for config_path in config_paths:
+            workspace_path = self._read_openclaw_workspace_from_config(config_path)
+            if workspace_path is not None:
+                candidates.append(workspace_path / "IDENTITY.md")
+
+        candidates.append(home / ".openclaw" / "workspace" / "IDENTITY.md")
+        candidates.append(home / ".openclaw-dev" / "workspace" / "IDENTITY.md")
+        candidates.extend(sorted(home.glob(".openclaw-*/workspace/IDENTITY.md")))
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except OSError:
+                resolved = candidate.expanduser()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(resolved)
+        return unique
+
+    @staticmethod
+    def _read_openclaw_workspace_from_config(config_path: Path) -> Path | None:
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+        try:
+            workspace = data["agents"]["defaults"]["workspace"]
+        except (KeyError, TypeError):
+            return None
+        if not isinstance(workspace, str) or not workspace.strip():
+            return None
+        return Path(workspace.strip()).expanduser()
+
+    @classmethod
+    def _parse_identity_line(cls, line: str) -> set[str]:
+        text = line.strip()
+        text = re.sub(r"^\s*[-*]\s*", "", text)
+        text = re.sub(r"^\s*#{1,6}\s*", "", text)
+        text = text.replace("**", "")
+        match = _IDENTITY_NAME_RE.match(text)
+        if not match:
+            return set()
+        return cls._split_identity_names(match.group(2))
+
+    @staticmethod
+    def _split_identity_names(value: str) -> set[str]:
+        text = value.strip().strip("`*_\"'«»“”")
+        if not text:
+            return set()
+        result: set[str] = set()
+        for part in re.split(r"[,;/|]", text):
+            cleaned = part.strip().strip("`*_\"'«»“”")
+            if cleaned:
+                result.add(cleaned.lower())
+        return result
+
+    def _identity_path_display(self) -> str:
+        return "speech_gate.identity_file or OpenClaw config workspace/IDENTITY.md"
 
     def _load_classifier(self) -> DirectedIntentClassifier:
         if self._classifier is not None:

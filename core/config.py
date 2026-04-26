@@ -354,6 +354,7 @@ class SpeechGateCfg:
     attention_window_seconds: float = 8.0
     attention_extension_seconds: float = 3.0
     patterns_file: str | None = "config/speech_gate_patterns.json"
+    identity_file: str | None = None
     assistant_names: list[str] = field(default_factory=list)
     command_verbs: list[str] = field(default_factory=list)
     politeness_markers: list[str] = field(default_factory=list)
@@ -526,6 +527,15 @@ def load(path: str | None = None) -> None:
                     "patterns_file", sg_cfg.patterns_file
                 )
                 sg_cfg.patterns_file = _resolve_project_path(patterns_file_value, root)
+
+            if "identity_file" in speech_gate_section:
+                identity_file_value = speech_gate_section.get(
+                    "identity_file", sg_cfg.identity_file
+                )
+                if isinstance(identity_file_value, str) and identity_file_value.strip().lower() == "auto":
+                    sg_cfg.identity_file = None
+                else:
+                    sg_cfg.identity_file = _resolve_project_path(identity_file_value, root)
 
             def _clean_str_list(value: object, current: list[str]) -> list[str]:
                 if isinstance(value, list):

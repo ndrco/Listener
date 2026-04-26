@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import sys
 
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 
 from core.bus import Event  # noqa: E402
+from core.config import cfg  # noqa: E402
 from llm.speech_gate import SpeechDirectionGate, SpeechGateMode  # noqa: E402
 from agents.speech_gate_agent import SpeechGateAgent  # noqa: E402
 
@@ -97,6 +99,111 @@ def test_speech_gate_fallback_drops_weak_phrase_without_model():
     assert decision.final_score == pytest.approx(0.0)
 
 
+def test_speech_gate_loads_assistant_name_from_openclaw_identity(tmp_path):
+    identity_path = tmp_path / ".openclaw" / "workspace" / "IDENTITY.md"
+    identity_path.parent.mkdir(parents=True)
+    identity_path.write_text(
+        "# Identity\n\nName: Marina\nИмя: Марина\n",
+        encoding="utf-8",
+    )
+
+    gate = _build_gate()
+    gate.patterns = {}
+    gate.root_path = tmp_path
+
+    class DummyCfg:
+        patterns_file = None
+        identity_file = ".openclaw/workspace/IDENTITY.md"
+        assistant_names: list[str] = []
+        command_verbs: list[str] = []
+        politeness_markers: list[str] = []
+        question_markers: list[str] = []
+        modal_markers: list[str] = []
+        continuation_patterns: list[str] = []
+
+    gate.patterns = gate._load_patterns(DummyCfg())  # pylint: disable=protected-access
+
+    assert gate.patterns["assistant_names"] == {"marina", "марина"}
+    decision = gate.should_allow("Марина, как дела?")
+    assert decision.allowed is True
+    assert decision.reason == "rules"
+    assert decision.rule_score == pytest.approx(1.0)
+
+
+def test_speech_gate_auto_discovers_openclaw_workspace_from_config(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    openclaw_config = home / ".openclaw" / "openclaw.json"
+    workspace = tmp_path / "openclaw-workspace"
+    identity_path = workspace / "IDENTITY.md"
+    openclaw_config.parent.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+    openclaw_config.write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(workspace)}}}),
+        encoding="utf-8",
+    )
+    identity_path.write_text(
+        "# IDENTITY.md\n\n- **Имя:** Марина\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("OPENCLAW_IDENTITY_FILE", raising=False)
+    monkeypatch.delenv("OPENCLAW_WORKSPACE", raising=False)
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    monkeypatch.delenv("OPENCLAW_CONFIG_PATH", raising=False)
+
+    gate = _build_gate()
+    gate.patterns = {}
+    gate.root_path = tmp_path
+
+    class DummyCfg:
+        patterns_file = None
+        identity_file = None
+        assistant_names: list[str] = []
+        command_verbs: list[str] = []
+        politeness_markers: list[str] = []
+        question_markers: list[str] = []
+        modal_markers: list[str] = []
+        continuation_patterns: list[str] = []
+
+    gate.patterns = gate._load_patterns(DummyCfg())  # pylint: disable=protected-access
+
+    assert gate.patterns["assistant_names"] == {"марина"}
+    assert gate.should_allow("Марина, как дела?").allowed is True
+
+
+def test_speech_gate_ignores_assistant_names_from_patterns_file(tmp_path):
+    patterns_path = tmp_path / "patterns.json"
+    patterns_path.write_text(
+        json.dumps(
+            {
+                "assistant_names": ["legacy"],
+                "command_verbs": ["расскажи"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    gate = _build_gate()
+    gate.patterns = {}
+    gate.root_path = tmp_path
+
+    class DummyCfg:
+        patterns_file = str(patterns_path)
+        identity_file = str(tmp_path / "missing_identity.md")
+        assistant_names: list[str] = []
+        command_verbs: list[str] = []
+        politeness_markers: list[str] = []
+        question_markers: list[str] = []
+        modal_markers: list[str] = []
+        continuation_patterns: list[str] = []
+
+    gate.patterns = gate._load_patterns(DummyCfg())  # pylint: disable=protected-access
+
+    assert "assistant_names" not in gate.patterns
+    assert gate.patterns["command_verbs"] == {"расскажи"}
+    assert gate.should_allow("Привет, legacy").allowed is False
+
+
 def test_speech_gate_agent_publishes_filtered_topic():
     async def _runner() -> None:
         class DummyBus:
@@ -115,15 +222,26 @@ def test_speech_gate_agent_publishes_filtered_topic():
             async def publish(self, topic: str, **payload):
                 self.events.append((topic, payload))
 
-        bus = DummyBus()
-        agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
-        await agent.start()
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
         try:
-            await agent._on_input_text(  # pylint: disable=protected-access
-                Event(topic="llm/input_text", payload={"text": "Привет, kissa"})
-            )
+            bus = DummyBus()
+            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            await agent.start()
+            try:
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Привет, kissa"})
+                )
+            finally:
+                await agent.close()
         finally:
-            await agent.close()
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
 
         assert any(topic == "llm/speaker_phrase" for topic, _ in bus.events)
         published_payload = [payload for topic, payload in bus.events if topic == "llm/speaker_phrase"][0]

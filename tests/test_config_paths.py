@@ -35,6 +35,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
             {
                 "speech_gate": {
                     "patterns_file": "config/speech_gate_patterns.json",
+                    "identity_file": ".openclaw/workspace/IDENTITY.md",
                     "model": {"path": "models/gate"},
                 },
                 "audio": {
@@ -70,6 +71,9 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
 
         assert cfg.speech_gate.patterns_file == str(
             (config_dir / "speech_gate_patterns.json").resolve()
+        )
+        assert cfg.speech_gate.identity_file == str(
+            (project_root / ".openclaw" / "workspace" / "IDENTITY.md").resolve()
         )
         assert cfg.speech_gate.model.path == str(speech_gate_dir.resolve())
         assert cfg.audio.processing.vad.model_path == str(silero_path.resolve())
