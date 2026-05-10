@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from agents.openclaw_gateway import abort_openclaw_chat_session
 from core.bus import Event, EventBus, bus as default_bus
@@ -28,8 +28,14 @@ class _ModeInterval:
 class SpeechGateAgent:
     """Consumes ``llm/input_text`` and publishes phrases accepted by SpeechGate."""
 
-    def __init__(self, *, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        bus: EventBus | None = None,
+        on_local_stop: Callable[[], Awaitable[int] | int | None] | None = None,
+    ) -> None:
         self._bus = bus or default_bus
+        self._on_local_stop = on_local_stop
         self._running = False
         self._paused = False
         self._input_topic = ""
@@ -233,6 +239,17 @@ class SpeechGateAgent:
 
         if match.action == "stop_generation":
             session_key = str(getattr(cfg.openclaw, "session_key", "") or "main").strip() or "main"
+            dropped_pending = 0
+            if self._on_local_stop is not None:
+                try:
+                    maybe_result = self._on_local_stop()
+                    if asyncio.iscoroutine(maybe_result):
+                        maybe_result = await maybe_result
+                    dropped_pending = int(maybe_result or 0)
+                except Exception:
+                    log.exception(
+                        "speech_gate: failed to clear pending OpenClaw input before local stop"
+                    )
             try:
                 result = await abort_openclaw_chat_session(session_key)
             except FileNotFoundError:
@@ -244,14 +261,33 @@ class SpeechGateAgent:
                     "speech_gate: failed to abort OpenClaw generation via local stop command"
                 )
             else:
-                log.info(
+                aborted = bool(result.get("aborted"))
+                method = str(result.get("method") or "unknown")
+                resolved_session_key = str(result.get("resolvedSessionKey") or session_key)
+                fallback_used = bool(result.get("fallbackUsed"))
+                steer_used = bool(result.get("steerUsed"))
+                interrupted_active = bool(result.get("interruptedActiveRun"))
+                attempt = int(result.get("attempt") or 1)
+                running_session_keys = result.get("runningSessionKeys") or []
+                log_method = log.info if aborted else log.warning
+                log_method(
                     "speech_gate: local stop command sent to OpenClaw "
-                    "(assistant=%s phrase=%s session=%s aborted=%s runs=%s)",
+                    "(assistant=%s phrase=%s session=%s method=%s aborted=%s runs=%s "
+                    "interrupted_active=%s dropped_pending=%s attempts=%s resolved_session=%s "
+                    "fallback_used=%s steer_used=%s running_sessions=%s)",
                     match.assistant_name,
                     match.phrase,
                     session_key,
-                    bool(result.get("aborted")),
+                    method,
+                    aborted,
                     len(result.get("runIds") or []),
+                    interrupted_active,
+                    dropped_pending,
+                    attempt,
+                    resolved_session_key,
+                    fallback_used,
+                    steer_used,
+                    running_session_keys,
                 )
             return
 

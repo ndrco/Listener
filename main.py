@@ -37,7 +37,11 @@ async def main() -> None:
             logging.exception("main: failed to start AudioAgent")
             audio = None
 
-    speech_gate = SpeechGateAgent()
+    openclaw_input = OpenClawInputAgent()
+
+    speech_gate = SpeechGateAgent(
+        on_local_stop=openclaw_input.clear_pending_messages,
+    )
     try:
         await speech_gate.start()
     except Exception:
@@ -52,7 +56,6 @@ async def main() -> None:
             logging.exception("main: failed to start ControlAgent")
             control = None
 
-    openclaw_input = OpenClawInputAgent()
     try:
         await openclaw_input.start()
     except Exception:

@@ -546,6 +546,10 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
             calls.append(session_key)
             return {"ok": True, "aborted": True, "runIds": ["run-1"]}
 
+        async def _fake_clear_pending() -> int:
+            calls.append("clear")
+            return 2
+
         old_names = list(cfg.speech_gate.assistant_names)
         old_patterns_file = cfg.speech_gate.patterns_file
         old_identity_file = cfg.speech_gate.identity_file
@@ -557,7 +561,10 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
         monkeypatch.setattr(speech_gate_agent_module, "abort_openclaw_chat_session", _fake_abort)
         try:
             bus = DummyBus()
-            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=bus,
+                on_local_stop=_fake_clear_pending,
+            )
             await agent.start()
             try:
                 await agent._on_input_text(  # pylint: disable=protected-access
@@ -571,7 +578,7 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
             cfg.speech_gate.identity_file = old_identity_file
             cfg.openclaw.session_key = old_session_key
 
-        assert calls == ["voice-main"]
+        assert calls == ["clear", "voice-main"]
         assert bus.events == []
 
     asyncio.run(_runner())

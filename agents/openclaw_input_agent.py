@@ -10,7 +10,7 @@ import subprocess
 import uuid
 from typing import Any
 
-from agents.openclaw_gateway import build_openclaw_base_command
+from agents.openclaw_gateway import build_openclaw_base_command, remember_openclaw_chat_run
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
 
@@ -60,6 +60,26 @@ class OpenClawInputAgent:
             return
         self._paused = False
         log.info("OpenClawInputAgent: resumed")
+
+    async def clear_pending_messages(self) -> int:
+        if self._queue is None:
+            return 0
+        dropped = 0
+        saw_stop_sentinel = False
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item is None:
+                saw_stop_sentinel = True
+                continue
+            dropped += 1
+        if saw_stop_sentinel:
+            await self._queue.put(None)
+        if dropped:
+            log.info("OpenClawInputAgent: cleared %s pending message(s)", dropped)
+        return dropped
 
     async def close(self) -> None:
         if not self._running:
@@ -167,10 +187,24 @@ class OpenClawInputAgent:
             log.warning("OpenClawInputAgent: chat.send failed (%s): %s", proc.returncode, details)
             return
 
+        out = (proc.stdout or b"").decode("utf-8", errors="ignore").strip()
+        response_payload: dict[str, Any] | None = None
+        if out:
+            try:
+                decoded = json.loads(out)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                response_payload = decoded
+                run_id = str(decoded.get("runId") or "").strip()
+                if run_id:
+                    remember_openclaw_chat_run(str(params.get("sessionKey") or "main"), run_id)
+
         if cfg.debug:
-            out = (proc.stdout or b"").decode("utf-8", errors="ignore").strip()
             if out:
                 log.info("OpenClawInputAgent: chat.send ok: %s", out)
+            elif response_payload is None:
+                log.info("OpenClawInputAgent: chat.send ok")
 
     def _build_message(self, payload: dict[str, Any]) -> str:
         raw_text = payload.get("text")
