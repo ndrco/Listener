@@ -28,6 +28,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
     silero_path.write_bytes(b"")
     (config_dir / "silero.json").write_text("{}", encoding="utf-8")
     (config_dir / "speech_gate_patterns.json").write_text("{}", encoding="utf-8")
+    (config_dir / "blacklist.txt").write_text("1988\n", encoding="utf-8")
 
     config_path = config_dir / "config.json"
     config_path.write_text(
@@ -55,6 +56,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
                     "stt": {
                         "model": "models/whisper/local-model",
                         "download_root": "models/whisper",
+                        "blacklist_path": "config/blacklist.txt",
                     },
                 },
             }
@@ -85,6 +87,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
         )
         assert cfg.audio.stt.model == str(stt_snapshot.resolve())
         assert cfg.audio.stt.download_root == str(whisper_dir.resolve())
+        assert cfg.audio.stt.blacklist_path == str((config_dir / "blacklist.txt").resolve())
         assert cfg.control.enabled is True
         assert cfg.control.host == "127.0.0.1"
         assert cfg.control.port == 18791

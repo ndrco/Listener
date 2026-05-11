@@ -449,14 +449,14 @@ class WhisperEngine:
 
     def _get_blacklist_path(self) -> Path | None:
         cfg = self._config
-        download_root = getattr(cfg, "download_root", None)
-        if not download_root:
+        blacklist_path = getattr(cfg, "blacklist_path", None)
+        if not blacklist_path:
             return None
         try:
-            base = Path(download_root).expanduser()
+            path = Path(blacklist_path).expanduser()
         except (TypeError, ValueError):
             return None
-        return base.joinpath("blacklist.txt")
+        return path
 
     def _is_blacklisted(self, phrase: str) -> bool:
         if not self._blacklist:
@@ -464,7 +464,15 @@ class WhisperEngine:
         candidate = self._normalize_blacklist_phrase(phrase)
         if not candidate:
             return False
-        return candidate in self._blacklist
+        padded_candidate = f" {candidate} "
+        for blocked in self._blacklist:
+            if not blocked:
+                continue
+            if padded_candidate == f" {blocked} ":
+                return True
+            if f" {blocked} " in padded_candidate:
+                return True
+        return False
 
     @staticmethod
     def _normalize_blacklist_phrase(phrase: str) -> str:
@@ -473,7 +481,8 @@ class WhisperEngine:
         Rules:
         - trim and collapse whitespace,
         - compare case-insensitively,
-        - ignore Unicode punctuation marks.
+        - ignore Unicode punctuation and symbol marks,
+        - preserve token boundaries when punctuation appears inside the text.
         """
 
         if not phrase:
@@ -483,10 +492,14 @@ class WhisperEngine:
         if not collapsed:
             return ""
 
-        no_punctuation = "".join(
-            ch for ch in collapsed if not unicodedata.category(ch).startswith("P")
-        )
-        return _BLACKLIST_SPACE_RE.sub(" ", no_punctuation).strip()
+        normalized_chars: list[str] = []
+        for ch in collapsed:
+            category = unicodedata.category(ch)
+            if category.startswith(("P", "S")):
+                normalized_chars.append(" ")
+                continue
+            normalized_chars.append(ch)
+        return _BLACKLIST_SPACE_RE.sub(" ", "".join(normalized_chars)).strip()
 
 
 __all__ = ["WhisperEngine"]

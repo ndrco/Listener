@@ -105,6 +105,7 @@ Default expected paths:
 - `models/silero_vad_v6.jit`
 - `models/directed-ruElectra-small-fp16`
 - `models/whisper`
+- `config/blacklist.txt`
 
 Download Silero VAD:
 

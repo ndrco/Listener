@@ -290,6 +290,7 @@ class WhisperSttCfg:
     device: str | None = None
     compute_type: str | None = None
     download_root: str | None = None
+    blacklist_path: str | None = "config/blacklist.txt"
     local_files_only: bool = False
     cpu_threads: int | None = None
     num_workers: int | None = None
@@ -1187,6 +1188,11 @@ def load(path: str | None = None) -> None:
             stt_section.get("download_root", stt_cfg.download_root), stt_cfg.download_root
         )
         stt_cfg.download_root = _resolve_project_path(stt_download_root, root)
+        stt_blacklist_path = _clean_optional_string(
+            stt_section.get("blacklist_path", stt_cfg.blacklist_path),
+            stt_cfg.blacklist_path,
+        )
+        stt_cfg.blacklist_path = _resolve_project_path(stt_blacklist_path, root)
         stt_cfg.local_files_only = _parse_bool(
             stt_section.get("local_files_only", stt_cfg.local_files_only), stt_cfg.local_files_only
         )

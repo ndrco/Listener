@@ -167,6 +167,7 @@
       "device": "cuda",
       "compute_type": "int8",
       "download_root": "models/whisper",
+      "blacklist_path": "config/blacklist.txt",
       "local_files_only": true,
       "cpu_threads": null,
       "num_workers": null,

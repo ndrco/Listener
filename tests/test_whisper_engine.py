@@ -156,3 +156,24 @@ def test_whisper_engine_falls_back_to_cpu_on_cuda_oom_during_transcribe(
         in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_whisper_engine_blacklist_matches_inside_phrase_ignoring_punctuation():
+    engine = WhisperEngine(WhisperSttCfg(enabled=False))
+    engine._blacklist = {  # pylint: disable=protected-access
+        engine._normalize_blacklist_phrase("1988"),  # pylint: disable=protected-access
+        engine._normalize_blacklist_phrase("Поехали"),  # pylint: disable=protected-access
+        engine._normalize_blacklist_phrase("Продолжение следует"),  # pylint: disable=protected-access
+    }
+
+    assert engine._is_blacklisted("1988") is True  # pylint: disable=protected-access
+    assert engine._is_blacklisted("1988, 1988, 1988") is True  # pylint: disable=protected-access
+    assert (
+        engine._is_blacklisted("Тут опять 1988 в середине фразы") is True
+    )  # pylint: disable=protected-access
+    assert engine._is_blacklisted("Поехали!") is True  # pylint: disable=protected-access
+    assert engine._is_blacklisted("Ну что, поехали.") is True  # pylint: disable=protected-access
+    assert (
+        engine._is_blacklisted("А дальше... продолжение следует?") is True
+    )  # pylint: disable=protected-access
+    assert engine._is_blacklisted("19880") is False  # pylint: disable=protected-access
