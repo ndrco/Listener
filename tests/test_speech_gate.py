@@ -110,6 +110,7 @@ def test_speech_gate_classifier_falls_back_to_cpu_on_cuda_oom_during_load(
     cfg.speech_gate.model.device = "cuda"
     cfg.speech_gate.model.max_length = 64
     monkeypatch.setattr(speech_gate_module, "DirectedIntentClassifier", FakeClassifier)
+    monkeypatch.setattr(speech_gate_module.torch.cuda, "is_available", lambda: True)
     caplog.set_level(logging.WARNING, logger=speech_gate_module.log.name)
     try:
         classifier = gate._load_classifier()  # pylint: disable=protected-access
@@ -160,6 +161,7 @@ def test_speech_gate_classifier_falls_back_to_cpu_on_cuda_oom_during_inference(
     cfg.speech_gate.model.device = "cuda"
     cfg.speech_gate.model.max_length = 64
     monkeypatch.setattr(speech_gate_module, "DirectedIntentClassifier", FakeClassifier)
+    monkeypatch.setattr(speech_gate_module.torch.cuda, "is_available", lambda: True)
     caplog.set_level(logging.WARNING, logger=speech_gate_module.log.name)
     try:
         decision = gate.should_allow("Расскажи про погоду")
