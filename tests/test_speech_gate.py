@@ -214,6 +214,7 @@ def test_speech_gate_modes_keep_expected_behavior():
     gate.set_mode(SpeechGateMode.MUTE)
     assert gate.should_allow("просто фраза").reason == "mute"
     assert gate.should_allow("Kissa, привет").allowed is True
+    assert gate.should_allow("включи").reason == "mute"
 
     gate.set_mode(SpeechGateMode.STANDBY)
     decision = gate.should_allow("Kissa, привет")

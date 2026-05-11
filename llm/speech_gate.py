@@ -620,20 +620,22 @@ class SpeechDirectionGate:
         if not normalized:
             return GateDecision(False, 0.0, 0.0, 0.0, continuation, "empty")
 
-        in_attention = active_mode == SpeechGateMode.CHATTY or now < self._attention_until
-
         if active_mode == SpeechGateMode.STANDBY:
             return GateDecision(False, 0.0, 0.0, 0.0, continuation, "standby")
 
         rule_score, has_name = self._rules_score(normalized)
 
+        if active_mode == SpeechGateMode.MUTE and not has_name:
+            return GateDecision(False, rule_score, 0.0, rule_score, continuation, "mute")
+
+        in_attention = active_mode == SpeechGateMode.CHATTY or (
+            active_mode == SpeechGateMode.NORMAL and now < self._attention_until
+        )
+
         if in_attention:
             if continuation:
                 self._extend_attention(now)
             return GateDecision(True, rule_score, 1.0, 1.0, continuation, "attention")
-
-        if active_mode == SpeechGateMode.MUTE and not has_name:
-            return GateDecision(False, rule_score, 0.0, rule_score, continuation, "mute")
 
         if rule_score >= self.rules_threshold:
             final_score = max(rule_score, self.final_threshold)
