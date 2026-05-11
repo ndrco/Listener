@@ -14,8 +14,10 @@ from agents.openclaw_gateway import (  # noqa: E402
     clear_openclaw_chat_run,
     get_openclaw_chat_run,
     remember_openclaw_chat_run,
+    steer_openclaw_chat_session,
 )
 from agents.openclaw_input_agent import OpenClawInputAgent  # noqa: E402
+from core.bus import Event  # noqa: E402
 from core.config import cfg  # noqa: E402
 
 
@@ -301,8 +303,62 @@ def test_abort_openclaw_chat_session_uses_sessions_abort_as_backup_after_steer_p
     asyncio.run(_runner())
 
 
+def test_steer_openclaw_chat_session_uses_running_session_fallback(monkeypatch):
+    async def _runner() -> None:
+        calls: list[tuple[str, dict]] = []
+
+        async def _fake_gateway_call(method: str, payload: dict):
+            calls.append((method, dict(payload)))
+            if method == "sessions.list":
+                return {
+                    "sessions": [
+                        {"key": "agent:main:main", "status": "running"},
+                        {"key": "agent:main:other", "status": "done"},
+                    ]
+                }
+            if method == "sessions.steer":
+                return {"ok": True, "status": "steered"}
+            raise AssertionError(f"unexpected call {method} {payload}")
+
+        monkeypatch.setattr("agents.openclaw_gateway._gateway_call", _fake_gateway_call)
+        result = await steer_openclaw_chat_session("main", "Kissa, уточни это")
+
+        assert calls == [
+            ("sessions.list", {}),
+            ("sessions.steer", {"key": "agent:main:main", "message": "Kissa, уточни это"}),
+        ]
+        assert result["steered"] is True
+        assert result["resolvedSessionKey"] == "agent:main:main"
+        assert result["fallbackUsed"] is True
+
+    asyncio.run(_runner())
+
+
+def test_steer_openclaw_chat_session_reports_no_running_session(monkeypatch):
+    async def _runner() -> None:
+        calls: list[tuple[str, dict]] = []
+
+        async def _fake_gateway_call(method: str, payload: dict):
+            calls.append((method, dict(payload)))
+            if method == "sessions.list":
+                return {"sessions": []}
+            raise AssertionError(f"unexpected call {method} {payload}")
+
+        monkeypatch.setattr("agents.openclaw_gateway._gateway_call", _fake_gateway_call)
+        result = await steer_openclaw_chat_session("main", "Kissa, уточни это")
+
+        assert calls == [("sessions.list", {})]
+        assert result["steered"] is False
+        assert result["reason"] == "no_running_session"
+        assert result["resolvedSessionKey"] == "main"
+
+    asyncio.run(_runner())
+
+
 def test_openclaw_input_agent_remembers_run_id(monkeypatch):
     async def _runner() -> None:
+        indicator_calls: list[str] = []
+
         async def _fake_to_thread(func, *args, **kwargs):
             return func(*args, **kwargs)
 
@@ -315,6 +371,10 @@ def test_openclaw_input_agent_remembers_run_id(monkeypatch):
                 stderr=b"",
             )
 
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
+
         old_enabled = cfg.openclaw.enabled
         old_command = cfg.openclaw.command
         old_session_key = cfg.openclaw.session_key
@@ -325,6 +385,7 @@ def test_openclaw_input_agent_remembers_run_id(monkeypatch):
         cfg.debug = False
         monkeypatch.setattr("agents.openclaw_input_agent.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr("agents.openclaw_input_agent.subprocess.run", _fake_run)
+        monkeypatch.setattr("agents.openclaw_input_agent.emit_indicator", _fake_emit)
         clear_openclaw_chat_run("voice-main")
         try:
             agent = OpenClawInputAgent()
@@ -345,7 +406,127 @@ def test_openclaw_input_agent_remembers_run_id(monkeypatch):
         assert isinstance(run_info, dict)
         assert run_info["run_id"] == "run-voice-1"
         assert isinstance(run_info["remembered_at"], float)
+        assert indicator_calls == ["forwarded"]
         clear_openclaw_chat_run("voice-main")
+
+    asyncio.run(_runner())
+
+
+def test_openclaw_input_agent_steers_barge_in_phrase(monkeypatch):
+    async def _runner() -> None:
+        calls: list[tuple[str, dict | str]] = []
+        indicator_calls: list[str] = []
+
+        async def _fake_steer(session_key: str, message: str):
+            calls.append(("steer", {"session_key": session_key, "message": message}))
+            return {"ok": True, "steered": True, "resolvedSessionKey": "agent:main:main"}
+
+        async def _fake_send(params: dict):
+            calls.append(("send", dict(params)))
+
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
+
+        agent = OpenClawInputAgent()
+        monkeypatch.setattr("agents.openclaw_input_agent.steer_openclaw_chat_session", _fake_steer)
+        monkeypatch.setattr(agent, "_send_chat_send", _fake_send)
+        monkeypatch.setattr("agents.openclaw_input_agent.emit_indicator", _fake_emit)
+
+        await agent._send_or_steer(  # pylint: disable=protected-access
+            {
+                "message": "Kissa, уточни",
+                "idempotencyKey": "abc",
+                "sessionKey": "main",
+                "_listener_barge_in": True,
+            }
+        )
+
+        assert calls == [("steer", {"session_key": "main", "message": "Kissa, уточни"})]
+        assert indicator_calls == ["interrupted"]
+
+    asyncio.run(_runner())
+
+
+def test_openclaw_input_agent_marks_explicit_barge_in_phrase_only():
+    async def _runner() -> None:
+        agent = OpenClawInputAgent()
+        agent._running = True  # pylint: disable=protected-access
+
+        await agent._on_phrase(  # pylint: disable=protected-access
+            Event(
+                topic="llm/accepted_phrase",
+                payload={
+                    "text": "Kissa, уточни",
+                    "speech_gate_leading_assistant_name": "kissa",
+                },
+            )
+        )
+        await agent._on_phrase(  # pylint: disable=protected-access
+            Event(
+                topic="llm/accepted_phrase",
+                payload={
+                    "text": "Kissa, нет, уточни",
+                    "speech_gate_leading_assistant_name": "kissa",
+                    "speech_gate_barge_in": True,
+                },
+            )
+        )
+
+        regular = await agent._queue.get()  # pylint: disable=protected-access
+        barge_in = await agent._queue.get()  # pylint: disable=protected-access
+        assert regular is not None
+        assert regular["message"] == "Kissa, уточни"
+        assert "_listener_barge_in" not in regular
+        assert barge_in is not None
+        assert barge_in["message"] == "Kissa, нет, уточни"
+        assert barge_in["_listener_barge_in"] is True
+
+    asyncio.run(_runner())
+
+
+def test_openclaw_input_agent_falls_back_to_chat_send_when_barge_in_has_no_run(monkeypatch):
+    async def _runner() -> None:
+        calls: list[tuple[str, dict | str]] = []
+        indicator_calls: list[str] = []
+
+        async def _fake_steer(session_key: str, message: str):
+            calls.append(("steer", {"session_key": session_key, "message": message}))
+            return {"ok": True, "steered": False, "reason": "no_running_session"}
+
+        async def _fake_send(params: dict):
+            calls.append(("send", dict(params)))
+
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
+
+        agent = OpenClawInputAgent()
+        monkeypatch.setattr("agents.openclaw_input_agent.steer_openclaw_chat_session", _fake_steer)
+        monkeypatch.setattr(agent, "_send_chat_send", _fake_send)
+        monkeypatch.setattr("agents.openclaw_input_agent.emit_indicator", _fake_emit)
+
+        await agent._send_or_steer(  # pylint: disable=protected-access
+            {
+                "message": "Kissa, новый вопрос",
+                "idempotencyKey": "abc",
+                "sessionKey": "main",
+                "_listener_barge_in": True,
+            }
+        )
+
+        assert calls == [
+            ("steer", {"session_key": "main", "message": "Kissa, новый вопрос"}),
+            (
+                "send",
+                {
+                    "message": "Kissa, новый вопрос",
+                    "idempotencyKey": "abc",
+                    "sessionKey": "main",
+                },
+            ),
+        ]
+        assert indicator_calls == []
 
     asyncio.run(_runner())
 

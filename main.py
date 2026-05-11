@@ -12,6 +12,7 @@ from agents.speech_gate_agent import SpeechGateAgent
 from core.bus import bus
 from core.config import cfg, load
 from core.logging_utils import configure_logging
+from core.sound_indicators import indicators
 
 
 async def main() -> None:
@@ -23,6 +24,11 @@ async def main() -> None:
         logging.info("Listener voice runtime starting")
 
     bus.start()
+
+    try:
+        await indicators.start()
+    except Exception:
+        logging.exception("main: failed to start sound indicators")
 
     audio: Optional[AudioAgent] = None
     speech_gate: Optional[SpeechGateAgent] = None
@@ -146,6 +152,11 @@ async def main() -> None:
 
         try:
             await bus.stop()
+        except Exception:
+            pass
+
+        try:
+            await indicators.close()
         except Exception:
             pass
 

@@ -10,9 +10,18 @@ import subprocess
 import uuid
 from typing import Any
 
-from agents.openclaw_gateway import build_openclaw_base_command, remember_openclaw_chat_run
+from agents.openclaw_gateway import (
+    build_openclaw_base_command,
+    remember_openclaw_chat_run,
+    steer_openclaw_chat_session,
+)
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
+from core.sound_indicators import (
+    INDICATOR_FORWARDED,
+    INDICATOR_INTERRUPTED,
+    emit_indicator,
+)
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +127,8 @@ class OpenClawInputAgent:
         session_key = str(getattr(cfg.openclaw, "session_key", "") or "").strip()
         if session_key:
             params["sessionKey"] = session_key
+        if bool(payload.get("speech_gate_barge_in")):
+            params["_listener_barge_in"] = True
 
         await self._queue.put(params)
 
@@ -129,11 +140,46 @@ class OpenClawInputAgent:
             if self._paused:
                 continue
             try:
-                await self._send_chat_send(item)
+                await self._send_or_steer(item)
             except Exception:
                 log.exception("OpenClawInputAgent: failed to send chat message")
 
+    async def _send_or_steer(self, params: dict[str, Any]) -> None:
+        params = dict(params)
+        barge_in = bool(params.pop("_listener_barge_in", False))
+        if not barge_in:
+            await self._send_chat_send(params)
+            return
+
+        message = str(params.get("message") or "").strip()
+        session_key = str(params.get("sessionKey") or "main").strip() or "main"
+        try:
+            steer_result = await steer_openclaw_chat_session(session_key, message)
+        except Exception as exc:
+            log.warning("OpenClawInputAgent: sessions.steer failed, using chat.send: %s", exc)
+        else:
+            if bool(steer_result.get("steered")):
+                if cfg.debug:
+                    log.info(
+                        "OpenClawInputAgent: barge-in steered session=%s resolved_session=%s",
+                        session_key,
+                        steer_result.get("resolvedSessionKey") or session_key,
+                    )
+                await emit_indicator(INDICATOR_INTERRUPTED)
+                return
+            if cfg.debug:
+                log.info(
+                    "OpenClawInputAgent: no active OpenClaw session for barge-in; using chat.send"
+                )
+
+        await self._send_chat_send(params)
+
     async def _send_chat_send(self, params: dict[str, Any]) -> None:
+        params = {
+            key: value
+            for key, value in dict(params).items()
+            if not str(key).startswith("_listener_")
+        }
         base_cmd = build_openclaw_base_command(getattr(cfg.openclaw, "command", "openclaw"))
 
         args = [
@@ -205,6 +251,7 @@ class OpenClawInputAgent:
                 log.info("OpenClawInputAgent: chat.send ok: %s", out)
             elif response_payload is None:
                 log.info("OpenClawInputAgent: chat.send ok")
+        await emit_indicator(INDICATOR_FORWARDED)
 
     def _build_message(self, payload: dict[str, Any]) -> str:
         raw_text = payload.get("text")

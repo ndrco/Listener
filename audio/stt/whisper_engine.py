@@ -39,6 +39,7 @@ class WhisperEngine:
         self._requested_device = str(config.device or "auto")
         self._active_device = self._requested_device
         self._active_compute_type = str(config.compute_type) if config.compute_type else None
+        self._resolved_model_name = self._resolve_model_name(config.model or "small")
 
         if self._enabled:
             self._initialise_model()
@@ -54,7 +55,7 @@ class WhisperEngine:
             )
 
         cfg = self._config
-        model_name = self._resolve_model_name(cfg.model or "small")
+        model_name = self._resolved_model_name
         init_kwargs = self._build_init_kwargs(cfg)
 
         try:
@@ -205,11 +206,38 @@ class WhisperEngine:
             return []
 
         try:
-            segments, _ = model.transcribe(audio, **self._transcribe_options)
-        except Exception:  # pragma: no cover - delegate errors to log and continue
+            return self._transcribe_audio(model, audio)
+        except Exception as exc:  # pragma: no cover - runtime path
+            if self._should_retry_inference_on_cpu(exc):
+                log.warning(
+                    "audio.stt.whisper: CUDA transcription ran out of memory; "
+                    "reloading model on CPU and retrying (model=%s, compute_type=%s)",
+                    self._resolved_model_name,
+                    self._active_compute_type or "default",
+                )
+                try:
+                    cpu_model = self._reload_model_on_cpu()
+                    return self._transcribe_audio(cpu_model, audio)
+                except Exception:  # pragma: no cover - delegate errors to log and continue
+                    log.exception(
+                        "audio.stt.whisper: transcription failed after CUDA OOM fallback to CPU"
+                    )
+                    return []
             log.exception("audio.stt.whisper: transcription failed")
             return []
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _get_resampler(self, input_rate: int) -> StreamingResampler:
+        resampler = self._resamplers.get(input_rate)
+        if resampler is None:
+            resampler = StreamingResampler(input_rate, self._target_sample_rate)
+            self._resamplers[input_rate] = resampler
+        return resampler
+
+    def _transcribe_audio(self, model: Any, audio: np.ndarray) -> List[str]:
+        segments, _ = model.transcribe(audio, **self._transcribe_options)
         results: List[str] = []
         for segment in segments:
             text = getattr(segment, "text", "")
@@ -222,18 +250,25 @@ class WhisperEngine:
                 log.debug("audio.stt.whisper: ignoring blacklisted phrase %r", cleaned)
                 continue
             results.append(cleaned)
-
         return results
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-    def _get_resampler(self, input_rate: int) -> StreamingResampler:
-        resampler = self._resamplers.get(input_rate)
-        if resampler is None:
-            resampler = StreamingResampler(input_rate, self._target_sample_rate)
-            self._resamplers[input_rate] = resampler
-        return resampler
+    def _should_retry_inference_on_cpu(self, exc: Exception) -> bool:
+        return self._should_retry_on_cpu(exc, {"device": self._active_device})
+
+    def _reload_model_on_cpu(self) -> Any:
+        cfg = self._config
+        fallback_kwargs = self._build_init_kwargs(cfg, device_override="cpu")
+        self._model = WhisperModel(self._resolved_model_name, **fallback_kwargs)
+        self._active_device = str(fallback_kwargs.get("device", "cpu"))
+        self._active_compute_type = (
+            str(fallback_kwargs["compute_type"]) if "compute_type" in fallback_kwargs else None
+        )
+        log.info(
+            "audio.stt.whisper: model reloaded on CPU after CUDA OOM (model=%s, compute_type=%s)",
+            self._resolved_model_name,
+            self._active_compute_type or "default",
+        )
+        return self._model
 
     @staticmethod
     def _to_int16(batch_pcm: np.ndarray | bytes | Iterable[int]) -> np.ndarray:

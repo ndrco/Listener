@@ -351,8 +351,16 @@ def test_speech_gate_detects_local_commands_without_swallowing_regular_prompt():
     assert stop is not None
     assert stop.action == "stop_generation"
 
+    assert gate.find_leading_assistant_name("Kissa, помолчи") == "kissa"
+    assert gate.find_leading_assistant_name("Пожалуйста, Kissa, помолчи") is None
+    assert gate.detect_local_command("Пожалуйста, Kissa, помолчи") is None
+    assert gate.detect_local_command("Включи Kissa, говори") is None
     assert gate.detect_local_command("Kissa, ответь какая погода") is None
     assert gate.detect_local_command("Kissa, слушай, какая сегодня погода") is None
+    assert gate.detect_barge_in_command("Kissa, ответь какая погода") is None
+    assert gate.detect_barge_in_command("Kissa, нет, я имел в виду Амстердам").phrase == "нет"  # type: ignore[union-attr]
+    assert gate.detect_barge_in_command("Kissa, точнее Амстердам").phrase == "точнее"  # type: ignore[union-attr]
+    assert gate.detect_barge_in_command("Пожалуйста, Kissa, нет") is None
 
 
 def test_speech_gate_agent_loads_identity_once_on_start(monkeypatch):
@@ -452,7 +460,7 @@ def test_speech_gate_agent_publishes_filtered_topic():
     asyncio.run(_runner())
 
 
-def test_speech_gate_agent_handles_local_voice_commands():
+def test_speech_gate_agent_handles_local_voice_commands(monkeypatch):
     async def _runner() -> None:
         class DummyBus:
             def __init__(self) -> None:
@@ -470,12 +478,19 @@ def test_speech_gate_agent_handles_local_voice_commands():
             async def publish(self, topic: str, **payload):
                 self.events.append((topic, payload))
 
+        indicator_calls: list[str] = []
+
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
+
         old_names = list(cfg.speech_gate.assistant_names)
         old_patterns_file = cfg.speech_gate.patterns_file
         old_identity_file = cfg.speech_gate.identity_file
         cfg.speech_gate.assistant_names = ["kissa"]
         cfg.speech_gate.patterns_file = None
         cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        monkeypatch.setattr(speech_gate_agent_module, "emit_indicator", _fake_emit)
         try:
             bus = DummyBus()
             agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
@@ -488,17 +503,39 @@ def test_speech_gate_agent_handles_local_voice_commands():
                 assert bus.events == []
 
                 await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "включи"})
+                )
+                assert agent.get_status()["mode"] == "mute"
+                assert bus.events == []
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "включи Kissa, говори"})
+                )
+                assert agent.get_status()["mode"] == "mute"
+
+                await agent._on_input_text(  # pylint: disable=protected-access
                     Event(topic="llm/input_text", payload={"text": "Kissa, говори"})
                 )
                 assert agent.get_status()["mode"] == "normal"
-                assert bus.events == []
+                assert len(bus.events) <= 1
 
                 await agent._on_input_text(  # pylint: disable=protected-access
                     Event(topic="llm/input_text", payload={"text": "Kissa, ответь какая погода"})
                 )
-                assert len(bus.events) == 1
-                assert bus.events[0][0] == "llm/accepted_phrase"
-                assert bus.events[0][1]["text"] == "Kissa, ответь какая погода"
+                assert bus.events[-1][0] == "llm/accepted_phrase"
+                assert bus.events[-1][1]["text"] == "Kissa, ответь какая погода"
+                assert bus.events[-1][1]["speech_gate_leading_assistant_name"] == "kissa"
+                assert "speech_gate_barge_in" not in bus.events[-1][1]
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(
+                        topic="llm/input_text",
+                        payload={"text": "Kissa, нет, я имел в виду Амстердам"},
+                    )
+                )
+                assert bus.events[-1][1]["text"] == "Kissa, нет, я имел в виду Амстердам"
+                assert bus.events[-1][1]["speech_gate_barge_in"] is True
+                assert bus.events[-1][1]["speech_gate_barge_in_phrase"] == "нет"
 
                 await agent._on_input_text(  # pylint: disable=protected-access
                     Event(topic="llm/input_text", payload={"text": "Kissa, выключись"})
@@ -511,13 +548,66 @@ def test_speech_gate_agent_handles_local_voice_commands():
                     Event(topic="llm/input_text", payload={"text": "Kissa, говори"})
                 )
                 assert agent.get_status()["mode"] == "normal"
-                assert len(bus.events) == 1
+                assert bus.events[-1][1]["text"] == "Kissa, нет, я имел в виду Амстердам"
+                assert indicator_calls.count("local_handled") == 4
             finally:
                 await agent.close()
         finally:
             cfg.speech_gate.assistant_names = old_names
             cfg.speech_gate.patterns_file = old_patterns_file
             cfg.speech_gate.identity_file = old_identity_file
+
+    asyncio.run(_runner())
+
+
+def test_speech_gate_agent_emits_rejected_indicator(monkeypatch):
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        indicator_calls: list[str] = []
+
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        monkeypatch.setattr(speech_gate_agent_module, "emit_indicator", _fake_emit)
+        try:
+            bus = DummyBus()
+            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            await agent.start()
+            try:
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "просто мысль вслух"})
+                )
+            finally:
+                await agent.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+
+        assert bus.events == []
+        assert indicator_calls == ["rejected"]
 
     asyncio.run(_runner())
 
@@ -541,6 +631,7 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
                 self.events.append((topic, payload))
 
         calls: list[str] = []
+        indicator_calls: list[str] = []
 
         async def _fake_abort(session_key: str):
             calls.append(session_key)
@@ -549,6 +640,10 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
         async def _fake_clear_pending() -> int:
             calls.append("clear")
             return 2
+
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
 
         old_names = list(cfg.speech_gate.assistant_names)
         old_patterns_file = cfg.speech_gate.patterns_file
@@ -559,6 +654,7 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
         cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
         cfg.openclaw.session_key = "voice-main"
         monkeypatch.setattr(speech_gate_agent_module, "abort_openclaw_chat_session", _fake_abort)
+        monkeypatch.setattr(speech_gate_agent_module, "emit_indicator", _fake_emit)
         try:
             bus = DummyBus()
             agent = SpeechGateAgent(  # type: ignore[arg-type]
@@ -580,6 +676,7 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
 
         assert calls == ["clear", "voice-main"]
         assert bus.events == []
+        assert indicator_calls == ["interrupted"]
 
     asyncio.run(_runner())
 

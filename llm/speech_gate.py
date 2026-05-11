@@ -36,6 +36,19 @@ _LOCAL_STANDBY_COMMANDS = frozenset(
     }
 )
 _LOCAL_ABORT_COMMANDS = frozenset({"остановись", "стоп", "хватит", "прекрати", "достаточно", "стой"})
+_LOCAL_BARGE_IN_COMMANDS = frozenset(
+    {
+        "нет",
+        "не так",
+        "подожди",
+        "постой",
+        "секунду",
+        "я имел в виду",
+        "точнее",
+        "не это",
+        "другими словами",
+    }
+)
 _LOCAL_COMMAND_FILLERS = frozenset(
     {
         "пожалуйста",
@@ -466,7 +479,10 @@ class SpeechDirectionGate:
                 break
         return current
 
-    def _find_command_tail_after_name(self, normalized_text: str) -> tuple[str, str] | None:
+    def find_leading_assistant_name(self, text: str) -> str | None:
+        normalized = self._normalize(text)
+        if not normalized:
+            return None
         assistant_names = sorted(
             self.patterns.get("assistant_names", set()),
             key=len,
@@ -475,10 +491,25 @@ class SpeechDirectionGate:
         for name in assistant_names:
             if not name:
                 continue
-            for match in re.finditer(rf"\b{re.escape(name)}\b", normalized_text):
-                tail = self._strip_command_tail(normalized_text[match.end() :])
-                if tail:
-                    return name, tail
+            if re.match(rf"^{re.escape(name)}(?:\b|$)", normalized):
+                return name
+        return None
+
+    def _find_command_tail_after_leading_name(self, normalized_text: str) -> tuple[str, str] | None:
+        assistant_names = sorted(
+            self.patterns.get("assistant_names", set()),
+            key=len,
+            reverse=True,
+        )
+        for name in assistant_names:
+            if not name:
+                continue
+            match = re.match(rf"^{re.escape(name)}(?:\b|$)", normalized_text)
+            if match is None:
+                continue
+            tail = self._strip_command_tail(normalized_text[match.end() :])
+            if tail:
+                return name, tail
         return None
 
     def _match_local_command_phrase(self, tail: str, phrases: Iterable[str]) -> str | None:
@@ -493,12 +524,20 @@ class SpeechDirectionGate:
                 return phrase
         return None
 
+    def _match_local_command_prefix(self, tail: str, phrases: Iterable[str]) -> str | None:
+        for phrase in sorted(set(phrases), key=len, reverse=True):
+            if not phrase:
+                continue
+            if re.match(rf"^{re.escape(phrase)}(?:\b|$)", tail):
+                return phrase
+        return None
+
     def detect_local_command(self, text: str) -> LocalCommandMatch | None:
         normalized = self._normalize(text)
         if not normalized:
             return None
 
-        name_and_tail = self._find_command_tail_after_name(normalized)
+        name_and_tail = self._find_command_tail_after_leading_name(normalized)
         if name_and_tail is None:
             return None
         assistant_name, tail = name_and_tail
@@ -527,6 +566,31 @@ class SpeechDirectionGate:
                     phrase=phrase,
                 )
         return None
+
+    def detect_barge_in_command(self, text: str) -> LocalCommandMatch | None:
+        normalized = self._normalize(text)
+        if not normalized:
+            return None
+
+        name_and_tail = self._find_command_tail_after_leading_name(normalized)
+        if name_and_tail is None:
+            return None
+        assistant_name, tail = name_and_tail
+        command_tail = self._strip_optional_local_fillers(tail)
+        if not command_tail:
+            return None
+
+        phrase = self._match_local_command_prefix(
+            command_tail,
+            self.patterns.get("local_barge_in_commands", set()) | _LOCAL_BARGE_IN_COMMANDS,
+        )
+        if not phrase:
+            return None
+        return LocalCommandMatch(
+            action="barge_in",
+            assistant_name=assistant_name,
+            phrase=phrase,
+        )
 
     def _extend_attention(self, now: float) -> None:
         self._attention_until = max(self._attention_until, now) + self.attention_extension

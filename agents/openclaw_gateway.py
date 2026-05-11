@@ -188,13 +188,7 @@ async def _abort_via_sessions_abort(session_key: str) -> dict[str, Any]:
 
 async def _steer_stop_session(session_key: str) -> dict[str, Any]:
     normalized_session_key = str(session_key or "").strip() or "main"
-    steer_payload = await _gateway_call(
-        "sessions.steer",
-        {
-            "key": normalized_session_key,
-            "message": "/stop",
-        },
-    )
+    steer_payload = await _steer_session(normalized_session_key, "/stop")
     interrupted_active = bool(steer_payload.get("interruptedActiveRun"))
     aborted_run_ids = [
         str(run_id or "").strip()
@@ -208,6 +202,98 @@ async def _steer_stop_session(session_key: str) -> dict[str, Any]:
         "interruptedActiveRun": interrupted_active,
         "method": "sessions.steer",
         "resolvedSessionKey": normalized_session_key,
+    }
+
+
+async def _steer_session(session_key: str, message: str) -> dict[str, Any]:
+    normalized_session_key = str(session_key or "").strip() or "main"
+    return await _gateway_call(
+        "sessions.steer",
+        {
+            "key": normalized_session_key,
+            "message": message,
+        },
+    )
+
+
+def _build_session_candidates(
+    requested_session_key: str,
+    running_session_keys: list[str],
+    fallback_session_keys: list[str],
+) -> list[str]:
+    normalized_session_key = str(requested_session_key or "").strip() or "main"
+    candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    if normalized_session_key in running_session_keys:
+        seen_candidates.add(normalized_session_key)
+        candidates.append(normalized_session_key)
+    for candidate in fallback_session_keys:
+        normalized_candidate = str(candidate or "").strip()
+        if not normalized_candidate or normalized_candidate in seen_candidates:
+            continue
+        seen_candidates.add(normalized_candidate)
+        candidates.append(normalized_candidate)
+    if len(running_session_keys) == 1:
+        only_key = str(running_session_keys[0] or "").strip()
+        if only_key and only_key not in seen_candidates:
+            seen_candidates.add(only_key)
+            candidates.append(only_key)
+    return candidates
+
+
+async def steer_openclaw_chat_session(session_key: str, message: str) -> dict[str, Any]:
+    normalized_session_key = str(session_key or "").strip() or "main"
+    normalized_message = " ".join(str(message or "").split())
+    if not normalized_message:
+        return {
+            "ok": True,
+            "steered": False,
+            "reason": "empty",
+            "method": "sessions.steer",
+            "requestedSessionKey": normalized_session_key,
+            "resolvedSessionKey": normalized_session_key,
+            "runningSessionKeys": [],
+            "fallbackSessionKeys": [],
+            "fallbackUsed": False,
+        }
+
+    sessions_list_payload = await _gateway_call("sessions.list", {})
+    running_session_keys = _extract_running_session_keys(sessions_list_payload)
+    fallback_session_keys = _choose_session_fallback_keys(
+        normalized_session_key,
+        running_session_keys,
+    )
+    steer_candidates = _build_session_candidates(
+        normalized_session_key,
+        running_session_keys,
+        fallback_session_keys,
+    )
+
+    for steer_session_key in steer_candidates:
+        steer_payload = await _steer_session(steer_session_key, normalized_message)
+        steered = bool(steer_payload.get("ok", True))
+        return {
+            **steer_payload,
+            "ok": bool(steer_payload.get("ok", True)),
+            "steered": steered,
+            "method": "sessions.steer",
+            "requestedSessionKey": normalized_session_key,
+            "resolvedSessionKey": steer_session_key,
+            "runningSessionKeys": running_session_keys,
+            "fallbackSessionKeys": list(fallback_session_keys),
+            "fallbackUsed": steer_session_key != normalized_session_key,
+        }
+
+    return {
+        "ok": True,
+        "steered": False,
+        "reason": "no_running_session",
+        "method": "sessions.steer",
+        "requestedSessionKey": normalized_session_key,
+        "resolvedSessionKey": normalized_session_key,
+        "runningSessionKeys": running_session_keys,
+        "fallbackSessionKeys": list(fallback_session_keys),
+        "fallbackUsed": False,
     }
 
 
@@ -288,22 +374,11 @@ async def abort_openclaw_chat_session(session_key: str) -> dict[str, Any]:
         running_session_keys,
     )
 
-    steer_candidates: list[str] = []
-    seen_candidates: set[str] = set()
-    if normalized_session_key in running_session_keys:
-        seen_candidates.add(normalized_session_key)
-        steer_candidates.append(normalized_session_key)
-    for candidate in fallback_session_keys:
-        normalized_candidate = str(candidate or "").strip()
-        if not normalized_candidate or normalized_candidate in seen_candidates:
-            continue
-        seen_candidates.add(normalized_candidate)
-        steer_candidates.append(normalized_candidate)
-    if len(running_session_keys) == 1:
-        only_key = str(running_session_keys[0] or "").strip()
-        if only_key and only_key not in seen_candidates:
-            seen_candidates.add(only_key)
-            steer_candidates.append(only_key)
+    steer_candidates = _build_session_candidates(
+        normalized_session_key,
+        running_session_keys,
+        fallback_session_keys,
+    )
 
     for steer_session_key in steer_candidates:
         try:
@@ -369,4 +444,5 @@ __all__ = [
     "clear_openclaw_chat_run",
     "get_openclaw_chat_run",
     "remember_openclaw_chat_run",
+    "steer_openclaw_chat_session",
 ]

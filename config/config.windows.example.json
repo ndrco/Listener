@@ -3,6 +3,16 @@
     "enabled": true,
     "command": "wsl -d <DistroName> -- openclaw"
   },
+  "indicators": {
+    "enabled": true,
+    "backend": "auto",
+    "output_device_index": 17,
+    "volume": 0.18,
+    "rejected": false,
+    "forwarded": true,
+    "local_handled": true,
+    "interrupted": true
+  },
   "audio": {
     "playback": {
       "device_index": 17

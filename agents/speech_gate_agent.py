@@ -12,6 +12,12 @@ from typing import Any, Awaitable, Callable
 from agents.openclaw_gateway import abort_openclaw_chat_session
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
+from core.sound_indicators import (
+    INDICATOR_INTERRUPTED,
+    INDICATOR_LOCAL_HANDLED,
+    INDICATOR_REJECTED,
+    emit_indicator,
+)
 from llm.speech_gate import LocalCommandMatch, SpeechDirectionGate, SpeechGateMode
 
 log = logging.getLogger(__name__)
@@ -202,6 +208,7 @@ class SpeechGateAgent:
                 match.phrase,
                 text,
             )
+            await emit_indicator(INDICATOR_LOCAL_HANDLED)
             return
 
         if match.action == "normal":
@@ -218,6 +225,7 @@ class SpeechGateAgent:
                 match.phrase,
                 text,
             )
+            await emit_indicator(INDICATOR_LOCAL_HANDLED)
             return
 
         if match.action == "standby":
@@ -235,6 +243,7 @@ class SpeechGateAgent:
                 match.phrase,
                 text,
             )
+            await emit_indicator(INDICATOR_LOCAL_HANDLED)
             return
 
         if match.action == "stop_generation":
@@ -289,6 +298,8 @@ class SpeechGateAgent:
                     steer_used,
                     running_session_keys,
                 )
+                if aborted:
+                    await emit_indicator(INDICATOR_INTERRUPTED)
             return
 
         log.debug(
@@ -460,6 +471,7 @@ class SpeechGateAgent:
                     decision.continuation,
                     text,
                 )
+            await emit_indicator(INDICATOR_REJECTED)
             return
 
         if cfg.debug:
@@ -480,6 +492,13 @@ class SpeechGateAgent:
         publish_payload["speech_gate_ml_score"] = decision.ml_score
         publish_payload["speech_gate_final_score"] = decision.final_score
         publish_payload["speech_gate_continuation"] = decision.continuation
+        leading_assistant_name = self._gate.find_leading_assistant_name(text)
+        if leading_assistant_name:
+            publish_payload["speech_gate_leading_assistant_name"] = leading_assistant_name
+        barge_in_command = self._gate.detect_barge_in_command(text)
+        if barge_in_command is not None:
+            publish_payload["speech_gate_barge_in"] = True
+            publish_payload["speech_gate_barge_in_phrase"] = barge_in_command.phrase
 
         await self._bus.publish(self._output_topic, **publish_payload)
 

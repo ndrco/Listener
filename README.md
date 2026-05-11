@@ -17,6 +17,7 @@ platform-specific sample config in `config/config.windows.example.json`.
 - Whisper STT through `faster-whisper`.
 - SpeechGate filtering with assistant name loaded from OpenClaw `IDENTITY.md`.
 - Runtime SpeechGate control API and `utils/listenerctl.py`.
+- Optional short audio indicators for rejected, forwarded and local control events.
 - Bundled OpenClaw workspace skill: `openclaw/skills/listener-control`.
 
 ## Pipeline
@@ -68,12 +69,28 @@ Important sections:
 
 - `control` - local runtime HTTP API for SpeechGate mode control.
 - `openclaw` - OpenClaw CLI/gateway forwarding settings.
+- `indicators` - short notification tones for SpeechGate/OpenClaw events.
 - `speech_gate` - directed-speech rules, identity file and classifier settings.
 - `audio.input` - microphone sample rate, channels, chunk size and device.
 - `audio.processing` - AEC, VAD, AGC, high-pass and noise suppression.
 - `audio.buffer` - speech segment buffering before STT.
 - `audio.stt` - Whisper model and decoding settings.
 - `events` - internal EventBus topic names.
+
+The primary SpeechGate pattern source is `config/speech_gate_patterns.json`.
+Inline pattern arrays in `config/config.json` are supported as overrides, but
+the default project config keeps them empty to avoid duplicate definitions.
+
+When `indicators.enabled=true`, Listener plays short tones for four cases:
+
+- phrase rejected by SpeechGate;
+- phrase forwarded into OpenClaw;
+- local voice command handled inside Listener;
+- successful interruption/stop sent into OpenClaw.
+
+Each of these can be toggled independently through `indicators.rejected`,
+`indicators.forwarded`, `indicators.local_handled`, and
+`indicators.interrupted`.
 
 The default `requirements.txt` is tuned for CUDA 12.8 PyTorch. For CPU-only
 machines, set `audio.stt.device="cpu"` and `speech_gate.model.device="cpu"` in

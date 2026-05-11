@@ -23,6 +23,18 @@
     "gateway_token": null,
     "call_timeout_s": 12.0
   },
+  "indicators": {
+    "enabled": true,
+    "backend": "auto",
+    "output_device_index": null,
+    "sample_rate": 24000,
+    "volume": 0.18,
+    "queue_maxsize": 8,
+    "rejected": false,
+    "forwarded": true,
+    "local_handled": true,
+    "interrupted": true
+  },
   "speech_gate": {
     "enable": true,
     "mode": "normal",
@@ -33,24 +45,11 @@
     "patterns_file": "config/speech_gate_patterns.json",
     "identity_file": null,
     "assistant_names": [],
-    "command_verbs": [
-      "включи",
-      "скажи"
-    ],
-    "politeness_markers": [
-      "пожалуйста"
-    ],
-    "question_markers": [
-      "как",
-      "зачем"
-    ],
-    "modal_markers": [
-      "можешь"
-    ],
-    "continuation_patterns": [
-      "и ещё",
-      "а также"
-    ],
+    "command_verbs": [],
+    "politeness_markers": [],
+    "question_markers": [],
+    "modal_markers": [],
+    "continuation_patterns": [],
     "model": {
       "path": "models/directed-ruElectra-small-fp16",
       "device": "cuda",

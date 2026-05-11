@@ -109,6 +109,22 @@ class OpenClawInputCfg:
 
 
 @dataclass
+class SoundIndicatorsCfg:
+    """Short audio cues for SpeechGate/OpenClaw workflow events."""
+
+    enabled: bool = True
+    backend: str = "auto"
+    output_device_index: int | None = None
+    sample_rate: int = 24000
+    volume: float = 0.18
+    queue_maxsize: int = 8
+    rejected: bool = True
+    forwarded: bool = True
+    local_handled: bool = True
+    interrupted: bool = True
+
+
+@dataclass
 class ControlCfg:
     """Local runtime control API settings."""
 
@@ -352,6 +368,7 @@ class Config:
         root = Path(__file__).resolve().parents[1]
         self.paths = Paths(root=root)
         self.openclaw = OpenClawInputCfg()
+        self.indicators = SoundIndicatorsCfg()
         self.control = ControlCfg()
         self.events = EventsCfg()
         self.speech_gate = SpeechGateCfg()
@@ -422,6 +439,65 @@ def load(path: str | None = None) -> None:
                     timeout_val = openclaw_cfg.call_timeout_s
                 if timeout_val > 0:
                     openclaw_cfg.call_timeout_s = timeout_val
+
+        # sound indicators
+        indicators_section = _as_dict(data.get("indicators"))
+        if indicators_section:
+            indicators_cfg = cfg.indicators
+            if "enabled" in indicators_section:
+                indicators_cfg.enabled = bool(
+                    indicators_section.get("enabled", indicators_cfg.enabled)
+                )
+
+            backend_value = indicators_section.get("backend", indicators_cfg.backend)
+            if isinstance(backend_value, str) and backend_value.strip():
+                indicators_cfg.backend = backend_value.strip().lower()
+
+            device_value = indicators_section.get(
+                "output_device_index", indicators_cfg.output_device_index
+            )
+            if device_value in ("", None):
+                indicators_cfg.output_device_index = None
+            else:
+                try:
+                    indicators_cfg.output_device_index = int(device_value)
+                except (TypeError, ValueError):
+                    pass
+
+            if "sample_rate" in indicators_section:
+                try:
+                    sample_rate = int(
+                        indicators_section.get("sample_rate", indicators_cfg.sample_rate)
+                    )
+                except (TypeError, ValueError):
+                    sample_rate = indicators_cfg.sample_rate
+                if sample_rate > 0:
+                    indicators_cfg.sample_rate = sample_rate
+
+            if "volume" in indicators_section:
+                try:
+                    volume = float(indicators_section.get("volume", indicators_cfg.volume))
+                except (TypeError, ValueError):
+                    volume = indicators_cfg.volume
+                indicators_cfg.volume = _clip(volume, 0.0, 1.0)
+
+            if "queue_maxsize" in indicators_section:
+                try:
+                    queue_maxsize = int(
+                        indicators_section.get("queue_maxsize", indicators_cfg.queue_maxsize)
+                    )
+                except (TypeError, ValueError):
+                    queue_maxsize = indicators_cfg.queue_maxsize
+                if queue_maxsize >= 1:
+                    indicators_cfg.queue_maxsize = queue_maxsize
+
+            for key in ("rejected", "forwarded", "local_handled", "interrupted"):
+                if key in indicators_section:
+                    setattr(
+                        indicators_cfg,
+                        key,
+                        bool(indicators_section.get(key, getattr(indicators_cfg, key))),
+                    )
 
         # control API
         control_section = _as_dict(data.get("control"))
