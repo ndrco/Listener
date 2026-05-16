@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import shlex
 import subprocess
 import time
+import uuid
 from typing import Any
 
 from core.config import cfg
+from core import perf
+
+try:  # pragma: no cover - depends on installed runtime extras
+    import websockets
+    from websockets.legacy.client import WebSocketClientProtocol
+except Exception:  # pragma: no cover
+    websockets = None  # type: ignore[assignment]
+    WebSocketClientProtocol = Any  # type: ignore[misc, assignment]
 
 log = logging.getLogger(__name__)
 
 _LAST_CHAT_RUN_BY_SESSION: dict[str, dict[str, Any]] = {}
+_GATEWAY_RPC_CLIENT: "OpenClawGatewayRpcClient | None" = None
+_GATEWAY_RPC_CLIENT_KEY: tuple[str, str | None] | None = None
+_PROTOCOL_VERSION = 3
 
 
 def build_openclaw_base_command(raw: Any) -> list[str]:
@@ -80,7 +93,227 @@ def clear_openclaw_chat_run(session_key: str, run_id: str | None = None) -> None
         _LAST_CHAT_RUN_BY_SESSION.pop(normalized_session_key, None)
 
 
-async def _gateway_call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _resolve_gateway_url() -> str:
+    gateway_url = getattr(cfg.openclaw, "gateway_url", None)
+    if gateway_url:
+        return str(gateway_url)
+    speaker = getattr(cfg, "speaker", None)
+    speaker_gateway = getattr(speaker, "gateway", None)
+    speaker_url = getattr(speaker_gateway, "url", None)
+    if speaker_url:
+        return str(speaker_url)
+    return "ws://127.0.0.1:18789"
+
+
+def _resolve_gateway_token() -> str | None:
+    token = getattr(cfg.openclaw, "gateway_token", None)
+    if token:
+        return str(token)
+    speaker = getattr(cfg, "speaker", None)
+    speaker_gateway = getattr(speaker, "gateway", None)
+    speaker_token = getattr(speaker_gateway, "token", None)
+    if speaker_token:
+        return str(speaker_token)
+    return None
+
+
+class OpenClawGatewayRpcClient:
+    """Small persistent JSON-RPC client for OpenClaw Gateway calls."""
+
+    def __init__(self, *, url: str, token: str | None = None) -> None:
+        self.url = str(url)
+        self.token = token
+        self._ws: WebSocketClientProtocol | None = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected and self._ws is not None
+
+    async def request(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        await self._ensure_connected(timeout_s=timeout_s)
+        ws = self._ws
+        if ws is None:
+            raise RuntimeError("OpenClaw gateway websocket is not connected")
+        request_id = f"listener-{uuid.uuid4().hex}"
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending[request_id] = future
+        frame = {
+            "type": "req",
+            "id": request_id,
+            "method": method,
+            "params": dict(payload),
+        }
+        await ws.send(json.dumps(frame, ensure_ascii=False))
+        try:
+            return await asyncio.wait_for(future, timeout=timeout_s)
+        finally:
+            self._pending.pop(request_id, None)
+
+    async def close(self) -> None:
+        task = self._reader_task
+        self._reader_task = None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        ws = self._ws
+        self._ws = None
+        self._connected = False
+        if ws is not None:
+            with contextlib.suppress(Exception):
+                await ws.close()
+        for future in self._pending.values():
+            if not future.done():
+                future.cancel()
+        self._pending.clear()
+
+    async def _ensure_connected(self, *, timeout_s: float) -> None:
+        if self.connected:
+            return
+        if self._ws is not None or self._reader_task is not None:
+            await self.close()
+        if websockets is None:
+            raise RuntimeError("websockets is not installed")
+        self._ws = await websockets.connect(
+            self.url,
+            open_timeout=timeout_s,
+            max_size=26 * 1024 * 1024,
+            user_agent_header="listener/input",
+        )
+        try:
+            await self._consume_optional_challenge()
+            await self._send_connect(timeout_s=timeout_s)
+        except Exception:
+            await self.close()
+            raise
+        self._reader_task = asyncio.create_task(
+            self._reader_loop(),
+            name="OpenClawGatewayRpcClient.reader",
+        )
+        self._connected = True
+
+    async def _consume_optional_challenge(self) -> None:
+        assert self._ws is not None
+        try:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=0.35)
+        except asyncio.TimeoutError:
+            return
+        frame = _decode_gateway_frame(raw)
+        if frame.get("type") == "event" and frame.get("event") == "connect.challenge":
+            return
+
+    async def _send_connect(self, *, timeout_s: float) -> None:
+        assert self._ws is not None
+        request_id = f"listener-connect-{uuid.uuid4().hex}"
+        auth: dict[str, str] = {}
+        if self.token:
+            auth["token"] = self.token
+        frame = {
+            "type": "req",
+            "id": request_id,
+            "method": "connect",
+            "params": {
+                "minProtocol": _PROTOCOL_VERSION,
+                "maxProtocol": _PROTOCOL_VERSION,
+                "client": {
+                    "id": "listener-input",
+                    "displayName": "Listener",
+                    "version": "runtime",
+                    "platform": "python",
+                    "mode": "backend",
+                },
+                "role": "operator",
+                "scopes": ["operator.read", "operator.write"],
+                "caps": [],
+                "commands": [],
+                "permissions": {},
+                "auth": auth,
+                "userAgent": "listener/input",
+            },
+        }
+        await self._ws.send(json.dumps(frame, ensure_ascii=False))
+        while True:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout_s)
+            response = _decode_gateway_frame(raw)
+            if response.get("type") != "res" or response.get("id") != request_id:
+                continue
+            if response.get("ok") is True:
+                return
+            raise RuntimeError(_format_gateway_error(response.get("error")))
+
+    async def _reader_loop(self) -> None:
+        assert self._ws is not None
+        try:
+            async for raw in self._ws:
+                frame = _decode_gateway_frame(raw)
+                if frame.get("type") != "res":
+                    continue
+                request_id = str(frame.get("id") or "")
+                future = self._pending.get(request_id)
+                if future is None or future.done():
+                    continue
+                if frame.get("ok") is True:
+                    payload = frame.get("payload")
+                    future.set_result(payload if isinstance(payload, dict) else {})
+                else:
+                    future.set_exception(RuntimeError(_format_gateway_error(frame.get("error"))))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(RuntimeError(str(exc)))
+        finally:
+            self._connected = False
+
+
+def _decode_gateway_frame(raw: str | bytes) -> dict[str, Any]:
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    frame = json.loads(raw)
+    if not isinstance(frame, dict):
+        raise RuntimeError("OpenClaw gateway sent a non-object frame")
+    return frame
+
+
+def _format_gateway_error(error: Any) -> str:
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("code") or "Gateway request failed")
+    if error:
+        return str(error)
+    return "Gateway request failed"
+
+
+async def _get_gateway_rpc_client() -> OpenClawGatewayRpcClient:
+    global _GATEWAY_RPC_CLIENT, _GATEWAY_RPC_CLIENT_KEY
+    key = (_resolve_gateway_url(), _resolve_gateway_token())
+    if _GATEWAY_RPC_CLIENT is None or _GATEWAY_RPC_CLIENT_KEY != key:
+        if _GATEWAY_RPC_CLIENT is not None:
+            await _GATEWAY_RPC_CLIENT.close()
+        _GATEWAY_RPC_CLIENT = OpenClawGatewayRpcClient(url=key[0], token=key[1])
+        _GATEWAY_RPC_CLIENT_KEY = key
+    return _GATEWAY_RPC_CLIENT
+
+
+async def _gateway_call_ws(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    timeout_s = float(getattr(cfg.openclaw, "call_timeout_s", 12.0) or 12.0)
+    if timeout_s <= 0:
+        timeout_s = 12.0
+    client = await _get_gateway_rpc_client()
+    return await client.request(method, payload, timeout_s=timeout_s)
+
+
+async def _gateway_call_cli(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     args = [
         *build_openclaw_base_command(getattr(cfg.openclaw, "command", "openclaw")),
         "gateway",
@@ -129,6 +362,54 @@ async def _gateway_call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload_data, dict):
         raise RuntimeError(f"OpenClaw {method} returned unexpected payload")
     return payload_data
+
+
+async def _gateway_call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    transport = str(getattr(cfg.openclaw, "transport", "gateway_ws") or "gateway_ws").lower()
+    start_ns = perf.now_ns()
+    if transport == "cli":
+        result = await _gateway_call_cli(method, payload)
+        perf.emit(
+            "openclaw",
+            "gateway_call_cli",
+            method=method,
+            duration_ms=perf.elapsed_ms(start_ns),
+        )
+        return result
+    try:
+        result = await _gateway_call_ws(method, payload)
+    except Exception as exc:
+        client = _GATEWAY_RPC_CLIENT
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.close()
+        perf.emit(
+            "openclaw",
+            "gateway_call_ws_failed",
+            method=method,
+            duration_ms=perf.elapsed_ms(start_ns),
+            error=exc,
+        )
+        log.warning(
+            "OpenClaw gateway websocket call failed for %s; falling back to CLI: %s",
+            method,
+            exc,
+        )
+        result = await _gateway_call_cli(method, payload)
+        perf.emit(
+            "openclaw",
+            "gateway_call_cli_fallback",
+            method=method,
+            duration_ms=perf.elapsed_ms(start_ns),
+        )
+        return result
+    perf.emit(
+        "openclaw",
+        "gateway_call_ws",
+        method=method,
+        duration_ms=perf.elapsed_ms(start_ns),
+    )
+    return result
 
 
 def _extract_running_session_keys(payload: dict[str, Any]) -> list[str]:

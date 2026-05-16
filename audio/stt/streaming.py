@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable
 
 from core.bus import EventBus, bus as default_bus
 from core.config import WhisperSttCfg, cfg
+from core import perf
 
 from audio.writer import BufferedSpeechWriter, SpeechSegment
 
@@ -194,11 +195,30 @@ class WhisperStreamingTranscriber:
         metadata = self._build_metadata(segment)
         self._current_metadata = metadata
         self._current_audio = segment.data
+        segment_id = str(metadata.get("segment_id") or getattr(segment, "segment_id", "") or "")
+        start_ns = perf.now_ns()
+        metadata["stt_started_ns"] = start_ns
+        perf.emit(
+            "stt",
+            "whisper_start",
+            segment_id=segment_id or None,
+            duration_ms=segment.duration_ms,
+            bytes=len(segment.data),
+        )
         try:
             engine = self._engine
             results = await self._transcribe_in_executor(
                 segment.data,
                 sample_rate=segment.sample_rate,
+            )
+            whisper_ms = perf.elapsed_ms(start_ns)
+            metadata["stt_ms"] = whisper_ms
+            perf.emit(
+                "stt",
+                "whisper_done",
+                segment_id=segment_id or None,
+                duration_ms=whisper_ms,
+                results=len(results),
             )
         except Exception:
             log.exception(
@@ -280,8 +300,10 @@ class WhisperStreamingTranscriber:
             return
 
         payload = dict(metadata)
+        phrase_id = str(payload.get("phrase_id") or "").strip() or perf.new_id("phrase")
         payload.update(
             {
+                "phrase_id": phrase_id,
                 "text": final_text,
                 "raw_text": self._current_raw_partial,
                 "confidence": confidence,
@@ -293,6 +315,14 @@ class WhisperStreamingTranscriber:
         )
 
         await self._publish_final(payload)
+        perf.emit(
+            "stt",
+            "final_published",
+            segment_id=payload.get("segment_id"),
+            phrase_id=phrase_id,
+            stt_ms=payload.get("stt_ms"),
+            text=perf.text_preview(final_text),
+        )
         self._reset_state()
 
     async def _flush_pending(self, *, reason: str) -> None:
@@ -310,6 +340,7 @@ class WhisperStreamingTranscriber:
         metadata = dict(segment.metadata)
         metadata.update(
             {
+                "segment_id": segment.segment_id or segment.metadata.get("segment_id"),
                 "start_timestamp": segment.start_timestamp,
                 "end_timestamp": segment.end_timestamp,
                 "duration_ms": segment.duration_ms,

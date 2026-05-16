@@ -10,6 +10,7 @@ from typing import Any, Deque, TYPE_CHECKING
 
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
+from core import perf
 
 from .processing import ProcessedAudioFrame
 
@@ -46,6 +47,7 @@ class SpeechSegment:
     frames: int
     voice_frames: int
     metadata: dict[str, Any]
+    segment_id: str = ""
 
 
 class BufferedSpeechWriter:
@@ -92,6 +94,7 @@ class BufferedSpeechWriter:
         self._voice_active: bool = False
 
         self._segments_emitted: int = 0
+        self._segment_id: str | None = None
 
         self._subscriptions: list[tuple[str, Any]] = []
         self._subscribe(cfg.events.audio.processed_frame, self._on_processed_frame)
@@ -223,6 +226,7 @@ class BufferedSpeechWriter:
         if self._segment_active:
             return
         self._segment_frames = []
+        self._segment_id = perf.new_id("seg")
         self._segment_active = True
         self._segment_start_ts = None
         self._segment_end_ts = None
@@ -308,6 +312,7 @@ class BufferedSpeechWriter:
             reason = "forced"
 
         data = b"".join(frame.data for frame in self._segment_frames)
+        segment_id = self._segment_id or perf.new_id("seg")
         frames_count = len(self._segment_frames)
         sample_rate = self._segment_frames[0].sample_rate
         channels = self._segment_frames[0].channels
@@ -329,9 +334,11 @@ class BufferedSpeechWriter:
             "vad_probability_max": self._segment_vad_probability_max,
             "webrtc_probability_max": self._segment_webrtc_probability_max,
             "silero_probability_max": self._segment_silero_probability_max,
+            "segment_id": segment_id,
         }
 
         segment = SpeechSegment(
+            segment_id=segment_id,
             data=data,
             sample_rate=sample_rate,
             channels=channels,
@@ -350,6 +357,20 @@ class BufferedSpeechWriter:
         await self._queue.put(segment)
         self._segments_emitted += 1
 
+        perf.emit(
+            "input",
+            "segment_ready",
+            segment_id=segment_id,
+            duration_ms=duration_ms,
+            frames=frames_count,
+            bytes=metadata["bytes"],
+            reason=reason or "complete",
+            speech_to_segment_ms=perf.elapsed_ms(
+                int(start_ts * 1_000_000_000) if start_ts else None,
+                int((end_ts or start_ts) * 1_000_000_000),
+            ),
+        )
+
         log.info(
             "audio.writer: segment #%d ready (duration=%.2f s, frames=%d, bytes=%d, reason=%s)",
             self._segments_emitted,
@@ -363,6 +384,7 @@ class BufferedSpeechWriter:
 
     def _reset_segment(self) -> None:
         self._segment_frames = []
+        self._segment_id = None
         self._segment_active = False
         self._pending_stop = False
         self._silence_started_ts = None

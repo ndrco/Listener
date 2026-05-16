@@ -45,6 +45,7 @@ class ConfigTests(unittest.TestCase):
                         "SPEAKER_PIPER_MODEL": "/tmp/model.onnx",
                         "SPEAKER_PIPER_VOLUME": "0.65",
                         "SPEAKER_PLAYER_COMMAND": "/bin/true",
+                        "SPEAKER_PLAYBACK_BACKEND": "paplay",
                         "SPEAKER_DUCKING_FADE_IN_MS": "35",
                         "SPEAKER_DUCKING_FADE_OUT_MS": "90",
                         "SPEAKER_DUCKING_ENABLED": "true",
@@ -60,6 +61,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.piper.model, "/tmp/model.onnx")
         self.assertEqual(config.piper.volume, 0.65)
         self.assertEqual(config.playback.command, "/bin/true")
+        self.assertEqual(config.playback.backend, "paplay")
         self.assertEqual(config.playback.ducking.fade_in_ms, 35)
         self.assertEqual(config.playback.ducking.fade_out_ms, 90)
         self.assertTrue(config.playback.ducking.enabled)

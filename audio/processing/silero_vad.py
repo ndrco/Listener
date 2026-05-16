@@ -191,6 +191,20 @@ class SileroVADHelper:
             )
         return probability
 
+    def warmup(self, sample_rate: int) -> None:
+        """Load the model and run one silent inference outside the hot path."""
+
+        if sample_rate <= 0:
+            raise ValueError(f"Sample rate must be a positive integer (got {sample_rate}).")
+
+        frame_samples = self._frame_samples_by_rate.get(int(sample_rate))
+        if frame_samples is None:
+            frame_samples = (int(sample_rate) * self._resolve_frame_duration_ms()) // 1000
+        if frame_samples <= 0:
+            raise ValueError("Silero warmup frame size resolved to zero samples.")
+
+        self.predict(np.zeros(frame_samples, dtype=np.int16), int(sample_rate))
+
     def _select_device_name(self, cfg: AudioProcessingCfg) -> str:
         vad_cfg = getattr(cfg, "vad", None)
         for attr in ("silero_device", "vad_device", "device"):

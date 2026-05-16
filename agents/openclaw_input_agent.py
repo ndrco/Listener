@@ -12,11 +12,13 @@ from typing import Any, Awaitable, Callable
 
 from agents.openclaw_gateway import (
     build_openclaw_base_command,
+    _gateway_call,
     remember_openclaw_chat_run,
     steer_openclaw_chat_session,
 )
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
+from core import perf
 from core.sound_indicators import (
     INDICATOR_FORWARDED,
     INDICATOR_INTERRUPTED,
@@ -130,6 +132,13 @@ class OpenClawInputAgent:
             "message": message,
             "idempotencyKey": uuid.uuid4().hex,
         }
+        phrase_id = str(payload.get("phrase_id") or "").strip()
+        if phrase_id:
+            params["_listener_phrase_id"] = phrase_id
+        for key in ("segment_id", "stt_ms", "speech_gate_ms", "stt_started_ns"):
+            value = payload.get(key)
+            if value is not None:
+                params[f"_listener_{key}"] = value
         session_key = str(getattr(cfg.openclaw, "session_key", "") or "").strip()
         if session_key:
             params["sessionKey"] = session_key
@@ -192,9 +201,68 @@ class OpenClawInputAgent:
             log.exception("OpenClawInputAgent: failed to interrupt Speaker for barge-in")
 
     async def _send_chat_send(self, params: dict[str, Any]) -> None:
+        transport = str(getattr(cfg.openclaw, "transport", "gateway_ws") or "gateway_ws").lower()
+        if transport == "gateway_ws":
+            try:
+                await self._send_chat_send_gateway(params)
+                return
+            except Exception as exc:
+                log.warning("OpenClawInputAgent: gateway_ws chat.send failed, using CLI: %s", exc)
+        await self._send_chat_send_cli(params)
+
+    async def _send_chat_send_gateway(self, params: dict[str, Any]) -> None:
+        raw_params = dict(params)
+        phrase_id = str(raw_params.get("_listener_phrase_id") or "").strip() or None
+        stt_ms = _float_or_none(raw_params.get("_listener_stt_ms"))
+        speech_gate_ms = _float_or_none(raw_params.get("_listener_speech_gate_ms"))
+        speech_to_openclaw_ms = _elapsed_from_param(raw_params.get("_listener_stt_started_ns"))
         params = {
             key: value
-            for key, value in dict(params).items()
+            for key, value in raw_params.items()
+            if not str(key).startswith("_listener_")
+        }
+        start_ns = perf.now_ns()
+        perf.emit(
+            "openclaw",
+            "send_start",
+            phrase_id=phrase_id,
+            transport="gateway_ws",
+            text=perf.text_preview(params.get("message")),
+        )
+        response_payload = await _gateway_call("chat.send", params)
+        run_id = str(response_payload.get("runId") or "").strip()
+        if run_id:
+            remember_openclaw_chat_run(str(params.get("sessionKey") or "main"), run_id)
+        duration = perf.elapsed_ms(start_ns)
+        perf.emit(
+            "openclaw",
+            "sent",
+            phrase_id=phrase_id,
+            run_id=run_id or None,
+            transport="gateway_ws",
+            duration_ms=duration,
+        )
+        perf.emit(
+            "summary",
+            "speech_to_openclaw",
+            phrase_id=phrase_id,
+            segment_id=raw_params.get("_listener_segment_id"),
+            speech_to_openclaw_ms=speech_to_openclaw_ms,
+            stt_ms=stt_ms,
+            speech_gate_ms=speech_gate_ms,
+            openclaw_send_ms=duration,
+        )
+        await emit_indicator(INDICATOR_FORWARDED)
+
+    async def _send_chat_send_cli(self, params: dict[str, Any]) -> None:
+        raw_params = dict(params)
+        phrase_id = str(raw_params.get("_listener_phrase_id") or "").strip() or None
+        stt_ms = _float_or_none(raw_params.get("_listener_stt_ms"))
+        speech_gate_ms = _float_or_none(raw_params.get("_listener_speech_gate_ms"))
+        speech_to_openclaw_ms = _elapsed_from_param(raw_params.get("_listener_stt_started_ns"))
+        params = {
+            key: value
+            for key, value in raw_params.items()
             if not str(key).startswith("_listener_")
         }
         base_cmd = build_openclaw_base_command(getattr(cfg.openclaw, "command", "openclaw"))
@@ -219,6 +287,15 @@ class OpenClawInputAgent:
         timeout_s = float(getattr(cfg.openclaw, "call_timeout_s", 12.0) or 12.0)
         if timeout_s <= 0:
             timeout_s = 12.0
+
+        start_ns = perf.now_ns()
+        perf.emit(
+            "openclaw",
+            "send_start",
+            phrase_id=phrase_id,
+            transport="cli",
+            text=perf.text_preview(params.get("message")),
+        )
 
         def _run_cmd() -> subprocess.CompletedProcess[bytes]:
             return subprocess.run(
@@ -269,6 +346,24 @@ class OpenClawInputAgent:
             elif response_payload is None:
                 log.info("OpenClawInputAgent: chat.send ok")
         await emit_indicator(INDICATOR_FORWARDED)
+        duration = perf.elapsed_ms(start_ns)
+        perf.emit(
+            "openclaw",
+            "sent",
+            phrase_id=phrase_id,
+            transport="cli",
+            duration_ms=duration,
+        )
+        perf.emit(
+            "summary",
+            "speech_to_openclaw",
+            phrase_id=phrase_id,
+            segment_id=raw_params.get("_listener_segment_id"),
+            speech_to_openclaw_ms=speech_to_openclaw_ms,
+            stt_ms=stt_ms,
+            speech_gate_ms=speech_gate_ms,
+            openclaw_send_ms=duration,
+        )
 
     def _build_message(self, payload: dict[str, Any]) -> str:
         raw_text = payload.get("text")
@@ -281,6 +376,24 @@ class OpenClawInputAgent:
                 self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _elapsed_from_param(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return perf.elapsed_ms(int(value))
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = ["OpenClawInputAgent"]

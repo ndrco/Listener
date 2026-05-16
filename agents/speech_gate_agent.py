@@ -12,6 +12,8 @@ from typing import Any, Awaitable, Callable
 from agents.openclaw_gateway import abort_openclaw_chat_session
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import cfg
+from core import perf
+from core.runtime_state import RuntimeStateStore
 from core.sound_indicators import (
     INDICATOR_INTERRUPTED,
     INDICATOR_LOCAL_HANDLED,
@@ -39,9 +41,11 @@ class SpeechGateAgent:
         *,
         bus: EventBus | None = None,
         on_local_stop: Callable[[], Awaitable[int] | int | None] | None = None,
+        state_store: RuntimeStateStore | None = None,
     ) -> None:
         self._bus = bus or default_bus
         self._on_local_stop = on_local_stop
+        self._state_store = state_store or RuntimeStateStore.from_config()
         self._running = False
         self._paused = False
         self._input_topic = ""
@@ -75,7 +79,9 @@ class SpeechGateAgent:
             )
             return
 
+        self._warmup_gate()
         self._clear_mode_state(source="config", reason="")
+        self._restore_runtime_state()
         self._bus.subscribe(self._input_topic, self._on_input_text)
         self._running = True
         self._paused = False
@@ -85,6 +91,15 @@ class SpeechGateAgent:
             self._output_topic,
             getattr(cfg.speech_gate, "enable", True),
         )
+
+    def _warmup_gate(self) -> None:
+        warmup = getattr(self._gate, "warmup", None)
+        if not callable(warmup):
+            return
+        try:
+            warmup()
+        except Exception as exc:  # noqa: BLE001 - warmup must not prevent startup
+            log.warning("SpeechGateAgent: classifier warmup failed: %s", exc)
 
     async def pause(self) -> None:
         if not self._running or self._paused:
@@ -188,6 +203,7 @@ class SpeechGateAgent:
             f"{ttl:.1f}s" if ttl is not None else "none",
             self._mode_reason,
         )
+        self._save_runtime_state()
         return self.get_status()
 
     async def _handle_local_command(self, match: LocalCommandMatch, text: str) -> None:
@@ -441,6 +457,70 @@ class SpeechGateAgent:
             previous_mode.value,
             restore_mode.value,
         )
+        self._save_runtime_state()
+
+    def _restore_runtime_state(self) -> None:
+        section = self._state_store.get_section("speech_gate")
+        if not section:
+            return
+
+        now = time.time()
+        saved_mode = SpeechGateMode.from_value(section.get("mode"))
+        restore_mode = _parse_mode_optional(section.get("restore_mode"))
+        expires_at = _parse_timestamp_optional(section.get("expires_at"))
+        changed_at = _parse_timestamp_optional(section.get("changed_at")) or now
+        source = str(section.get("source") or "runtime_state")
+        reason = str(section.get("reason") or "")
+
+        if expires_at is not None and expires_at <= now:
+            saved_mode = restore_mode or SpeechGateMode.NORMAL
+            restore_mode = None
+            expires_at = None
+
+        self._mode_version += 1
+        self._gate.set_mode(saved_mode)
+        self._gate.clear_attention()
+        self._mode_restore = restore_mode if expires_at is not None else None
+        self._mode_expires_at = expires_at
+        self._mode_changed_at = changed_at
+        self._mode_source = source
+        self._mode_reason = reason
+        self._mode_history = [
+            _ModeInterval(
+                mode=saved_mode,
+                start_at=changed_at,
+                end_at=expires_at,
+                restore_mode=self._mode_restore,
+            )
+        ]
+        if expires_at is not None and self._mode_restore is not None:
+            remaining = max(0.0, expires_at - now)
+            self._mode_ttl_task = asyncio.create_task(
+                self._restore_mode_after(remaining, self._mode_restore, self._mode_version),
+                name="SpeechGateAgent.mode_ttl",
+            )
+        self._save_runtime_state()
+        log.info(
+            "SpeechGateAgent: restored persisted mode=%s temporary=%s",
+            saved_mode.value,
+            expires_at is not None,
+        )
+
+    def _save_runtime_state(self) -> None:
+        try:
+            self._state_store.save_section(
+                "speech_gate",
+                {
+                    "mode": self._gate.mode.value,
+                    "restore_mode": self._mode_restore.value if self._mode_restore else None,
+                    "expires_at": self._mode_expires_at,
+                    "changed_at": self._mode_changed_at,
+                    "source": self._mode_source,
+                    "reason": self._mode_reason,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence must stay best-effort
+            log.warning("SpeechGateAgent: failed to persist runtime state: %s", exc)
 
     async def _on_input_text(self, event: Event) -> None:
         if not self._running or self._paused:
@@ -450,10 +530,27 @@ class SpeechGateAgent:
         text = " ".join(str(payload.get("text") or "").split())
         if not text:
             return
+        phrase_id = str(payload.get("phrase_id") or "").strip() or perf.new_id("phrase")
+        payload["phrase_id"] = phrase_id
+        gate_start_ns = perf.now_ns()
+        perf.emit(
+            "speech_gate",
+            "start",
+            phrase_id=phrase_id,
+            segment_id=payload.get("segment_id"),
+            text=perf.text_preview(text),
+        )
 
         local_command = self._gate.detect_local_command(text)
         if local_command is not None:
             await self._handle_local_command(local_command, text)
+            perf.emit(
+                "speech_gate",
+                "local_command",
+                phrase_id=phrase_id,
+                duration_ms=perf.elapsed_ms(gate_start_ns),
+                action=local_command.action,
+            )
             return
 
         # Keep this synchronous: in some Linux runtimes torch-initialized processes
@@ -472,6 +569,14 @@ class SpeechGateAgent:
                     text,
                 )
             await emit_indicator(INDICATOR_REJECTED)
+            perf.emit(
+                "speech_gate",
+                "drop",
+                phrase_id=phrase_id,
+                duration_ms=perf.elapsed_ms(gate_start_ns),
+                reason=decision.reason,
+                speech_gate_ms=perf.elapsed_ms(gate_start_ns),
+            )
             return
 
         if cfg.debug:
@@ -487,6 +592,8 @@ class SpeechGateAgent:
 
         publish_payload = dict(payload)
         publish_payload["text"] = text
+        speech_gate_ms = perf.elapsed_ms(gate_start_ns)
+        publish_payload["speech_gate_ms"] = speech_gate_ms
         publish_payload["speech_gate_reason"] = decision.reason
         publish_payload["speech_gate_rule_score"] = decision.rule_score
         publish_payload["speech_gate_ml_score"] = decision.ml_score
@@ -501,6 +608,35 @@ class SpeechGateAgent:
             publish_payload["speech_gate_barge_in_phrase"] = barge_in_command.phrase
 
         await self._bus.publish(self._output_topic, **publish_payload)
+        perf.emit(
+            "speech_gate",
+            "allow",
+            phrase_id=phrase_id,
+            segment_id=publish_payload.get("segment_id"),
+            duration_ms=speech_gate_ms,
+            reason=decision.reason,
+        )
 
 
 __all__ = ["SpeechGateAgent"]
+
+
+def _parse_timestamp_optional(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    return timestamp
+
+
+def _parse_mode_optional(value: Any) -> SpeechGateMode | None:
+    if value in (None, ""):
+        return None
+    try:
+        return SpeechGateMode.parse(value)
+    except ValueError:
+        return None

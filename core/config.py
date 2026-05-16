@@ -103,11 +103,22 @@ class OpenClawInputCfg:
 
     enabled: bool = False
     command: str = "openclaw"
+    transport: str = "gateway_ws"
     source_topic: str = "llm/accepted_phrase"
     session_key: str = "main"
     gateway_url: str | None = None
     gateway_token: str | None = None
     call_timeout_s: float = 12.0
+
+
+@dataclass
+class PerformanceCfg:
+    """Structured runtime performance logging settings."""
+
+    enabled: bool = False
+    log_level: str = "info"
+    include_text_preview: bool = True
+    text_preview_chars: int = 80
 
 
 @dataclass
@@ -146,6 +157,7 @@ class ControlCfg:
     port: int = 18790
     token: str | None = None
     max_ttl_seconds: float = 86400.0
+    state_path: str | None = "state/runtime_state.json"
 
 
 @dataclass
@@ -381,6 +393,7 @@ class Config:
         self.preview_width: int = 960
         root = Path(__file__).resolve().parents[1]
         self.paths = Paths(root=root)
+        self.performance = PerformanceCfg()
         self.openclaw = OpenClawInputCfg()
         self.indicators = SoundIndicatorsCfg()
         self.control = ControlCfg()
@@ -427,6 +440,12 @@ def load(path: str | None = None) -> None:
             if isinstance(command_value, str) and command_value.strip():
                 openclaw_cfg.command = command_value.strip()
 
+            transport_value = openclaw_section.get("transport", openclaw_cfg.transport)
+            if isinstance(transport_value, str) and transport_value.strip():
+                transport = transport_value.strip().lower()
+                if transport in {"gateway_ws", "cli"}:
+                    openclaw_cfg.transport = transport
+
             source_topic_value = openclaw_section.get("source_topic", openclaw_cfg.source_topic)
             if isinstance(source_topic_value, str) and source_topic_value.strip():
                 openclaw_cfg.source_topic = source_topic_value.strip()
@@ -454,6 +473,34 @@ def load(path: str | None = None) -> None:
                     timeout_val = openclaw_cfg.call_timeout_s
                 if timeout_val > 0:
                     openclaw_cfg.call_timeout_s = timeout_val
+
+        # performance
+        performance_section = _as_dict(data.get("performance"))
+        if performance_section:
+            perf_cfg = cfg.performance
+            if "enabled" in performance_section:
+                perf_cfg.enabled = bool(performance_section.get("enabled", perf_cfg.enabled))
+            log_level = performance_section.get("log_level", perf_cfg.log_level)
+            if isinstance(log_level, str) and log_level.strip():
+                normalized = log_level.strip().lower()
+                if normalized in {"debug", "info", "warning", "error"}:
+                    perf_cfg.log_level = normalized
+            if "include_text_preview" in performance_section:
+                perf_cfg.include_text_preview = bool(
+                    performance_section.get(
+                        "include_text_preview", perf_cfg.include_text_preview
+                    )
+                )
+            if "text_preview_chars" in performance_section:
+                try:
+                    preview_chars = int(
+                        performance_section.get(
+                            "text_preview_chars", perf_cfg.text_preview_chars
+                        )
+                    )
+                except (TypeError, ValueError):
+                    preview_chars = perf_cfg.text_preview_chars
+                perf_cfg.text_preview_chars = max(0, preview_chars)
 
         # speaker
         speaker_section = _as_dict(data.get("speaker"))
@@ -595,6 +642,10 @@ def load(path: str | None = None) -> None:
                     control_cfg.max_ttl_seconds = max_ttl_value
             except (TypeError, ValueError):
                 pass
+
+            if "state_path" in control_section:
+                state_path = _resolve_project_path(control_section.get("state_path"), root)
+                control_cfg.state_path = state_path
 
         # speech gate
         speech_gate_section = _as_dict(data.get("speech_gate"))

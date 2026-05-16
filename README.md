@@ -116,6 +116,39 @@ The default `requirements.txt` is tuned for CUDA 12.8 PyTorch. For CPU-only
 machines, set `audio.stt.device="cpu"` and `speech_gate.model.device="cpu"` in
 `config/config.json`.
 
+## Performance Diagnostics
+
+Listener has optional structured latency logs. Enable them in
+`config/config.json`:
+
+```json
+"performance": {
+  "enabled": true,
+  "log_level": "info",
+  "include_text_preview": true,
+  "text_preview_chars": 80
+}
+```
+
+Then run Listener and search for compact perf lines:
+
+```bash
+.venv/bin/python main.py 2>&1 | tee /tmp/listener-perf.log
+rg "perf\\.(input|stt|speech_gate|openclaw|speaker)" /tmp/listener-perf.log
+rg "stage=(speech_to_openclaw|tts_segment)" /tmp/listener-perf.log
+```
+
+Useful first metrics are `speech_to_openclaw_ms`, `stt_ms`,
+`speech_gate_ms`, `openclaw_send_ms`, `synth_ms`, and
+`playback_start_delay_ms`. As a rough target, short local phrases should avoid
+multi-second pauses before OpenClaw, and spoken replies should not restore
+ducking or fade out between sentences in the same run.
+
+For input-only latency testing, temporarily set `speaker.enabled=false`. To
+isolate STT/OpenClaw from SpeechGate classifier cost, set
+`speech_gate.mode="chatty"`. For the lowest VAD latency comparison, set
+`audio.processing.vad.pipeline="webrtc"`.
+
 ## Models
 
 Model weights are intentionally not tracked in git.

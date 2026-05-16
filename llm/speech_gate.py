@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - import availability depends on environme
     AutoTokenizer = None
 
 from core.config import cfg
+from core import perf
 
 log = logging.getLogger(__name__)
 _IDENTITY_NAME_RE = re.compile(r"^\s*(Name|Имя)\s*[:=\-—]\s*(.+?)\s*$", re.IGNORECASE)
@@ -158,6 +159,29 @@ class SpeechDirectionGate:
     @classmethod
     def from_config(cls) -> "SpeechDirectionGate":
         return cls()
+
+    def warmup(self) -> bool:
+        """Load the classifier and run one tiny inference before speech arrives."""
+
+        if not self.enabled or self.mode == SpeechGateMode.CHATTY:
+            return False
+
+        model_cfg = getattr(getattr(cfg, "speech_gate", object()), "model", object())
+        model_path = Path(str(getattr(model_cfg, "path", "models/directed-ruElectra-small-fp16")))
+        if not model_path.is_absolute():
+            model_path = self.root_path / model_path
+        if not model_path.exists():
+            return False
+
+        start_ns = perf.now_ns()
+        classifier = self._load_classifier()
+        classifier.predict_directed_prob("привет")
+        perf.emit(
+            "speech_gate",
+            "warmup",
+            duration_ms=perf.elapsed_ms(start_ns),
+        )
+        return True
 
     def set_mode(self, mode: SpeechGateMode) -> None:
         self.mode = mode

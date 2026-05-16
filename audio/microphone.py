@@ -35,6 +35,7 @@ def _input_stream_accepts_kwarg(stream_cls: Any, kwarg: str) -> bool:
 
 from core.bus import EventBus, bus as default_bus
 from core.config import cfg
+from core import perf
 
 log = logging.getLogger(__name__)
 
@@ -210,6 +211,13 @@ class MicrophoneStream:
             log.warning("audio.microphone: received unexpected chunk type %r", type(indata))
             return
         if data:
+            perf.emit(
+                "input",
+                "microphone_callback",
+                bytes=len(data),
+                frames=frames,
+                sample_rate=self.sample_rate,
+            )
             self._schedule_chunk(data)
 
     def _schedule_chunk(self, data: bytes) -> None:

@@ -40,6 +40,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
                     "port": 18791,
                     "token": "",
                     "max_ttl_seconds": 123.0,
+                    "state_path": "state/runtime_state.json",
                 },
                 "speech_gate": {
                     "patterns_file": "config/speech_gate_patterns.json",
@@ -93,6 +94,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
         assert cfg.control.port == 18791
         assert cfg.control.token is None
         assert cfg.control.max_ttl_seconds == 123.0
+        assert cfg.control.state_path == str((project_root / "state" / "runtime_state.json").resolve())
     finally:
         cfg.paths = real_paths
         load(str(ROOT / "config" / "config.json"))

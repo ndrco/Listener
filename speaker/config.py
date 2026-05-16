@@ -13,6 +13,7 @@ DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
 LEGACY_PIPER_DIR = PROJECT_ROOT / "piper"
 DEFAULT_PLAYER_COMMAND = "/usr/bin/paplay"
 SPEAKER_MODES = {"streaming", "final"}
+TTS_MODES = {"persistent", "subprocess"}
 
 
 def default_piper_command() -> str:
@@ -69,6 +70,7 @@ class DuckingConfig:
 
 @dataclass(slots=True)
 class PlaybackConfig:
+    backend: str = "auto"
     command: str = DEFAULT_PLAYER_COMMAND
     client_name: str = "Speaker"
     stream_name: str = "Speaker TTS"
@@ -87,6 +89,7 @@ class StreamingConfig:
 @dataclass(slots=True)
 class RuntimeConfig:
     mode: str = "streaming"
+    tts_mode: str = "persistent"
     speak_existing_on_start: bool = False
     queue_size: int = 32
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -187,6 +190,8 @@ class SpeakerConfig:
             gateway = replace(gateway, session_key=session_key)
         if mode := os.getenv("SPEAKER_MODE"):
             speaker = replace(speaker, mode=mode)
+        if tts_mode := os.getenv("SPEAKER_TTS_MODE"):
+            speaker = replace(speaker, tts_mode=tts_mode)
         if command := os.getenv("SPEAKER_PIPER_COMMAND"):
             piper = replace(piper, command=command)
         if model := os.getenv("SPEAKER_PIPER_MODEL"):
@@ -195,6 +200,8 @@ class SpeakerConfig:
             piper = replace(piper, volume=float(volume))
         if player := os.getenv("SPEAKER_PLAYER_COMMAND"):
             playback = replace(playback, command=player)
+        if backend := os.getenv("SPEAKER_PLAYBACK_BACKEND"):
+            playback = replace(playback, backend=backend)
         if fade_in_ms := os.getenv("SPEAKER_DUCKING_FADE_IN_MS") or os.getenv("SPEAKER_FADE_IN_MS"):
             playback = replace(
                 playback,
@@ -326,6 +333,9 @@ def _normalize_runtime_config(config: Any) -> Any:
     mode = str(config.mode or "streaming").strip().casefold()
     if mode not in SPEAKER_MODES:
         raise ValueError(f"speaker.mode must be one of: {', '.join(sorted(SPEAKER_MODES))}")
+    tts_mode = str(getattr(config, "tts_mode", "persistent") or "persistent").strip().casefold()
+    if tts_mode not in TTS_MODES:
+        raise ValueError(f"speaker.tts_mode must be one of: {', '.join(sorted(TTS_MODES))}")
     streaming = config.streaming
     chunking = str(streaming.chunking or "sentence").strip().casefold()
     if chunking != "sentence":
@@ -337,12 +347,16 @@ def _normalize_runtime_config(config: Any) -> Any:
         max_chars=max(1, int(streaming.max_chars)),
         flush_on_final=bool(streaming.flush_on_final),
     )
-    return replace(config, mode=mode, streaming=normalized_streaming)
+    return replace(config, mode=mode, tts_mode=tts_mode, streaming=normalized_streaming)
 
 
 def _normalize_playback_config(config: PlaybackConfig) -> PlaybackConfig:
+    backend = str(getattr(config, "backend", "auto") or "auto").strip().casefold()
+    if backend not in {"auto", "sounddevice", "paplay", "subprocess"}:
+        raise ValueError("speaker.playback.backend must be one of: auto, sounddevice, paplay, subprocess")
     return replace(
         config,
+        backend=backend,
         timeout_s=max(1.0, float(config.timeout_s)),
         ducking=replace(
             config.ducking,

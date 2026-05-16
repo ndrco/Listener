@@ -378,10 +378,12 @@ def test_openclaw_input_agent_remembers_run_id(monkeypatch):
         old_enabled = cfg.openclaw.enabled
         old_command = cfg.openclaw.command
         old_session_key = cfg.openclaw.session_key
+        old_transport = cfg.openclaw.transport
         old_debug = cfg.debug
         cfg.openclaw.enabled = True
         cfg.openclaw.command = "openclaw"
         cfg.openclaw.session_key = "voice-main"
+        cfg.openclaw.transport = "cli"
         cfg.debug = False
         monkeypatch.setattr("agents.openclaw_input_agent.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr("agents.openclaw_input_agent.subprocess.run", _fake_run)
@@ -400,12 +402,64 @@ def test_openclaw_input_agent_remembers_run_id(monkeypatch):
             cfg.openclaw.enabled = old_enabled
             cfg.openclaw.command = old_command
             cfg.openclaw.session_key = old_session_key
+            cfg.openclaw.transport = old_transport
             cfg.debug = old_debug
 
         run_info = get_openclaw_chat_run("voice-main")
         assert isinstance(run_info, dict)
         assert run_info["run_id"] == "run-voice-1"
         assert isinstance(run_info["remembered_at"], float)
+        assert indicator_calls == ["forwarded"]
+        clear_openclaw_chat_run("voice-main")
+
+    asyncio.run(_runner())
+
+
+def test_openclaw_input_agent_uses_gateway_transport(monkeypatch):
+    async def _runner() -> None:
+        calls: list[tuple[str, dict]] = []
+        indicator_calls: list[str] = []
+
+        async def _fake_gateway_call(method: str, payload: dict):
+            calls.append((method, dict(payload)))
+            return {"runId": "run-ws-1"}
+
+        async def _fake_emit(kind: str) -> bool:
+            indicator_calls.append(kind)
+            return True
+
+        old_transport = cfg.openclaw.transport
+        try:
+            cfg.openclaw.transport = "gateway_ws"
+            monkeypatch.setattr("agents.openclaw_input_agent._gateway_call", _fake_gateway_call)
+            monkeypatch.setattr("agents.openclaw_input_agent.emit_indicator", _fake_emit)
+            clear_openclaw_chat_run("voice-main")
+
+            agent = OpenClawInputAgent()
+            await agent._send_chat_send(  # pylint: disable=protected-access
+                {
+                    "message": "hello",
+                    "idempotencyKey": "abc",
+                    "sessionKey": "voice-main",
+                    "_listener_phrase_id": "phrase-1",
+                }
+            )
+        finally:
+            cfg.openclaw.transport = old_transport
+
+        assert calls == [
+            (
+                "chat.send",
+                {
+                    "message": "hello",
+                    "idempotencyKey": "abc",
+                    "sessionKey": "voice-main",
+                },
+            )
+        ]
+        run_info = get_openclaw_chat_run("voice-main")
+        assert isinstance(run_info, dict)
+        assert run_info["run_id"] == "run-ws-1"
         assert indicator_calls == ["forwarded"]
         clear_openclaw_chat_run("voice-main")
 

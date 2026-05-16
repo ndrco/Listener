@@ -86,6 +86,7 @@ def _save_control_cfg() -> tuple:
         cfg.control.port,
         cfg.control.token,
         cfg.control.max_ttl_seconds,
+        cfg.control.state_path,
     )
 
 
@@ -96,6 +97,7 @@ def _restore_control_cfg(saved: tuple) -> None:
         cfg.control.port,
         cfg.control.token,
         cfg.control.max_ttl_seconds,
+        cfg.control.state_path,
     ) = saved
 
 

@@ -34,6 +34,7 @@ from .silero_vad import SileroVADHelper
 
 from core.bus import Event, EventBus, bus as default_bus
 from core.config import AudioProcessingCfg, cfg
+from core import perf
 
 log = logging.getLogger(__name__)
 
@@ -314,6 +315,7 @@ class AudioProcessor:
         if not self.config.enabled:
             log.warning("audio.processing: started while configuration is disabled")
         self._running = True
+        await self._warmup_silero_vad()
         if self._debug:
             log.debug("audio.processing: starting processor worker task")
         self._worker_task = asyncio.create_task(
@@ -371,6 +373,23 @@ class AudioProcessor:
         self._teardown_aec_subscription()
 
     # === internal ==========================================================
+
+    async def _warmup_silero_vad(self) -> None:
+        helper = self._silero_vad
+        warmup = getattr(helper, "warmup", None)
+        if helper is None or not callable(warmup):
+            return
+        start_ns = perf.now_ns()
+        try:
+            await asyncio.to_thread(warmup, int(self.output_sample_rate))
+        except Exception as exc:  # noqa: BLE001 - warmup must not prevent startup
+            log.warning("audio.processing: Silero VAD warmup failed: %s", exc)
+            return
+        perf.emit(
+            "input",
+            "silero_warmup",
+            duration_ms=perf.elapsed_ms(start_ns),
+        )
 
     def _initialize_vad(self) -> None:
         """Create and configure VAD instance."""
@@ -1358,6 +1377,7 @@ class AudioProcessor:
             await self._bus.publish(cfg.events.audio.voice_activity, **payload)
 
     def _process_frame(self, data: bytes) -> ProcessedAudioFrame:
+        process_start_ns = perf.now_ns()
         timestamp = time.time()
         pcm = np.frombuffer(data, dtype=np.int16).astype(np.int16, copy=True)
         pcm = self._apply_aec(pcm)
@@ -1409,7 +1429,7 @@ class AudioProcessor:
         #        vad_metrics["silero_invocations"],
         #        chunk_duration_ms,
         #    )
-        return ProcessedAudioFrame(
+        frame = ProcessedAudioFrame(
             data=processed_data,
             sample_rate=self.output_sample_rate,
             channels=self.channels,
@@ -1423,6 +1443,15 @@ class AudioProcessor:
             silero_probability=vad_metrics["silero_probability"],
             silero_invocations=int(vad_metrics["silero_invocations"]),
         )
+        perf.emit(
+            "input",
+            "processor_frame",
+            duration_ms=perf.elapsed_ms(process_start_ns),
+            voice=voice,
+            vad_probability=vad_metrics["vad_probability"],
+            bytes=len(processed_data),
+        )
+        return frame
 
     @staticmethod
     def _compute_rms(pcm: np.ndarray) -> float:
@@ -1484,6 +1513,8 @@ class AudioProcessor:
     def _detect_voice(
         self, pcm: np.ndarray, chunk_duration_ms: float
     ) -> tuple[bool, dict[str, float | int]]:
+        vad_start_ns = perf.now_ns()
+        was_active = self._voice_active or self._pending_segment_end
         vad_cfg = getattr(self.config, "vad", None)
 
         metrics: dict[str, float | int] = {
@@ -1721,6 +1752,22 @@ class AudioProcessor:
         #        speech_frames,
         #        total_frames,
         #    )
+
+        is_active = self._voice_active or self._pending_segment_end
+        if is_active and not was_active:
+            perf.emit(
+                "input",
+                "vad_start",
+                vad_probability=metrics["vad_probability"],
+                duration_ms=perf.elapsed_ms(vad_start_ns),
+            )
+        elif was_active and not is_active:
+            perf.emit(
+                "input",
+                "vad_end",
+                vad_probability=metrics["vad_probability"],
+                duration_ms=perf.elapsed_ms(vad_start_ns),
+            )
 
         return voice_detected, metrics
 

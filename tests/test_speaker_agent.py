@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agents.speaker_agent import SpeechPlaybackController  # noqa: E402
+from agents.speaker_agent import SpeakerAgent, SpeechPlaybackController  # noqa: E402
+from core.config import cfg  # noqa: E402
+from speaker.config import SpeakerConfig  # noqa: E402
 from speaker.events import SpeechSegment  # noqa: E402
 
 
@@ -153,5 +155,34 @@ def test_speech_playback_controller_disable_drops_queued_segments():
             assert controller.enqueue(SpeechSegment("seg-3", "Three.", "run-3")) is False
         finally:
             await controller.close()
+
+    asyncio.run(_runner())
+
+
+def test_speaker_agent_restores_persisted_enabled_state(tmp_path):
+    async def _runner() -> None:
+        class RecordingSpeech:
+            async def speak(self, text: str) -> None:
+                return None
+
+        old_state_path = cfg.control.state_path
+        cfg.control.state_path = str(tmp_path / "runtime_state.json")
+        try:
+            first_config = SpeakerConfig()
+            first = SpeakerAgent(config=first_config, speech=RecordingSpeech())
+            await first.set_enabled(False, source="test", reason="quiet")
+            await first.close()
+
+            second_config = SpeakerConfig()
+            second = SpeakerAgent(config=second_config, speech=RecordingSpeech())
+            try:
+                status = second.get_status()
+                assert status["enabled"] is False
+                assert status["source"] == "test"
+                assert status["reason"] == "quiet"
+            finally:
+                await second.close()
+        finally:
+            cfg.control.state_path = old_state_path
 
     asyncio.run(_runner())

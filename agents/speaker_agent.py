@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Callable
 
+from audio.ducking import PulseAudioDucker
 from core.config import cfg
+from core import perf
+from core.runtime_state import RuntimeStateStore
 from speaker.config import SpeakerConfig
 from speaker.emoji import EmojiDisplayClient, extract_emoji_for_speech
 from speaker.events import ChatSpeechRouter, SpeechSegment
@@ -28,9 +32,13 @@ class SpeechPlaybackController:
         queue_size: int,
         enabled: bool = True,
         emoji_display: EmojiDisplayClient | None = None,
+        ducking_config: object | None = None,
     ) -> None:
         self._speech = speech
         self._emoji_display = emoji_display
+        self._ducking_config = ducking_config
+        self._run_ducker: PulseAudioDucker | None = None
+        self._ducked_run_id: str | None = None
         self._queue: asyncio.Queue[SpeechSegment | None] = asyncio.Queue(
             maxsize=max(1, int(queue_size or 1))
         )
@@ -92,6 +100,7 @@ class SpeechPlaybackController:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await self._restore_run_ducking()
         if self._emoji_display is not None:
             await self._emoji_display.clear(reason=str(reason or "interrupt"))
         if dropped:
@@ -148,6 +157,7 @@ class SpeechPlaybackController:
                 self._queue.task_done()
                 continue
             self._current_segment = segment
+            await self._ensure_run_ducking(segment.run_id)
             parsed = extract_emoji_for_speech(segment.text)
             if parsed.tokens:
                 log.debug(
@@ -170,6 +180,8 @@ class SpeechPlaybackController:
                 )
                 self._queue.task_done()
                 self._current_segment = None
+                if self._queue.empty():
+                    await self._restore_run_ducking()
                 continue
             self._current_task = asyncio.create_task(
                 self._speech.speak(parsed.speech_text),
@@ -177,7 +189,22 @@ class SpeechPlaybackController:
             )
             try:
                 log.info("SpeakerAgent: speaking assistant reply %s", segment.identifier)
+                speak_start_ns = perf.now_ns()
+                perf.emit(
+                    "speaker",
+                    "segment_start",
+                    run_id=segment.run_id,
+                    segment_id=segment.identifier,
+                    text=perf.text_preview(parsed.speech_text),
+                )
                 await self._current_task
+                perf.emit(
+                    "speaker",
+                    "segment_done",
+                    run_id=segment.run_id,
+                    segment_id=segment.identifier,
+                    duration_ms=perf.elapsed_ms(speak_start_ns),
+                )
             except asyncio.CancelledError:
                 if self._closing:
                     raise
@@ -188,6 +215,42 @@ class SpeechPlaybackController:
                 self._current_task = None
                 self._current_segment = None
                 self._queue.task_done()
+                if self._queue.empty():
+                    await self._restore_run_ducking()
+
+    async def _ensure_run_ducking(self, run_id: str) -> None:
+        if self._ducking_config is None:
+            return
+        if self._ducked_run_id == run_id and self._run_ducker is not None:
+            return
+        await self._restore_run_ducking()
+        ducker = PulseAudioDucker(self._ducking_config)
+        duck_start_ns = perf.now_ns()
+        await ducker.duck()
+        self._run_ducker = ducker
+        self._ducked_run_id = run_id
+        perf.emit(
+            "speaker",
+            "ducking_start",
+            run_id=run_id,
+            duration_ms=perf.elapsed_ms(duck_start_ns),
+        )
+
+    async def _restore_run_ducking(self) -> None:
+        ducker = self._run_ducker
+        run_id = self._ducked_run_id
+        self._run_ducker = None
+        self._ducked_run_id = None
+        if ducker is None:
+            return
+        restore_start_ns = perf.now_ns()
+        await ducker.restore()
+        perf.emit(
+            "speaker",
+            "ducking_restore",
+            run_id=run_id,
+            duration_ms=perf.elapsed_ms(restore_start_ns),
+        )
 
 
 class SpeakerAgent:
@@ -199,22 +262,37 @@ class SpeakerAgent:
         config: SpeakerConfig | None = None,
         gateway_factory: Callable[[object], GatewayClient] | None = None,
         speech: SpeechEngine | None = None,
+        state_store: RuntimeStateStore | None = None,
     ) -> None:
         self._config = config or cfg.speaker
+        self._state_store = state_store or RuntimeStateStore.from_config()
+        self._enabled_source = "config"
+        self._enabled_reason = ""
+        self._enabled_changed_at = time.time()
+        self._restore_runtime_state()
         self._gateway_factory = gateway_factory or (lambda gateway_cfg: GatewayClient(gateway_cfg))
-        self._speech = speech or PiperSpeechEngine(self._config.piper, self._config.playback)
+        tts_mode = str(getattr(self._config.speaker, "tts_mode", "persistent") or "persistent")
+        persistent_tts = tts_mode == "persistent"
+        self._speech = speech or PiperSpeechEngine(
+            self._config.piper,
+            self._config.playback,
+            prefetch=persistent_tts,
+            manage_ducking=not persistent_tts,
+        )
         self._emoji_display = EmojiDisplayClient(self._config.emoji_display)
         self._playback = SpeechPlaybackController(
             speech=self._speech,
             queue_size=self._config.speaker.queue_size,
             enabled=bool(self._config.enabled),
             emoji_display=self._emoji_display,
+            ducking_config=self._config.playback.ducking if persistent_tts else None,
         )
         self._running = False
         self._gateway_task: asyncio.Task[None] | None = None
         self._gateway: GatewayClient | None = None
         self._connected = False
         self._last_error = ""
+        self._seen_delta_runs: set[str] = set()
 
     async def start(self) -> None:
         if self._running:
@@ -255,6 +333,10 @@ class SpeakerAgent:
         else:
             await self._stop_gateway_task()
             await self._playback.set_enabled(False, reason=reason or source)
+        self._enabled_source = str(source or "api")
+        self._enabled_reason = str(reason or "")
+        self._enabled_changed_at = time.time()
+        self._save_runtime_state()
         log.info("SpeakerAgent: enabled=%s source=%s reason=%s", target, source, reason)
         return self.get_status()
 
@@ -264,12 +346,46 @@ class SpeakerAgent:
             "enabled": bool(self._config.enabled),
             "connected": self._connected,
             "mode": self._config.speaker.mode,
+            "tts_mode": self._config.speaker.tts_mode,
             "session_key": self._config.gateway.session_key,
             "gateway_url": self._config.gateway.url,
             "last_error": self._last_error or None,
+            "changed_at": self._enabled_changed_at,
+            "source": self._enabled_source,
+            "reason": self._enabled_reason,
             "emoji_display": self._emoji_display.get_status(),
             "playback": self._playback.get_status(),
         }
+
+    def _restore_runtime_state(self) -> None:
+        section = self._state_store.get_section("speaker")
+        if not section:
+            return
+        enabled = section.get("enabled")
+        if enabled is not None:
+            self._config.enabled = bool(enabled)
+        self._enabled_source = str(section.get("source") or "runtime_state")
+        self._enabled_reason = str(section.get("reason") or "")
+        changed_at = section.get("changed_at")
+        try:
+            self._enabled_changed_at = float(changed_at)
+        except (TypeError, ValueError):
+            self._enabled_changed_at = time.time()
+        log.info("SpeakerAgent: restored persisted enabled=%s", self._config.enabled)
+
+    def _save_runtime_state(self) -> None:
+        try:
+            self._state_store.save_section(
+                "speaker",
+                {
+                    "enabled": bool(self._config.enabled),
+                    "changed_at": self._enabled_changed_at,
+                    "source": self._enabled_source,
+                    "reason": self._enabled_reason,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence must stay best-effort
+            log.warning("SpeakerAgent: failed to persist runtime state: %s", exc)
 
     def _ensure_gateway_task(self) -> None:
         if self._gateway_task and not self._gateway_task.done():
@@ -394,11 +510,15 @@ class SpeakerAgent:
         router: ChatSpeechRouter,
     ) -> None:
         result = router.route(event)
+        state = str(payload.get("state") or "")
+        run_id = str(payload.get("runId") or "unknown")
+        if state == "delta" and run_id not in self._seen_delta_runs:
+            self._seen_delta_runs.add(run_id)
+            perf.emit("openclaw", "first_delta_seen", run_id=run_id)
         for segment in result.segments:
             self._enqueue(segment)
         if not result.needs_history:
             return
-        run_id = str(payload.get("runId") or "unknown")
         log.info(
             "SpeakerAgent: final event needs history check run_id=%s known_segments=%d",
             run_id,

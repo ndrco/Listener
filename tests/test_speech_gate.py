@@ -755,6 +755,119 @@ def test_speech_gate_agent_runtime_mode_control():
     asyncio.run(_runner())
 
 
+def test_speech_gate_agent_restores_temporary_mode_after_restart(tmp_path):
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        old_state_path = cfg.control.state_path
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        cfg.control.state_path = str(tmp_path / "runtime_state.json")
+        try:
+            first = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
+            await first.start()
+            try:
+                await first.set_mode("chatty", ttl_seconds=0.2, source="test", reason="persist me")
+                await asyncio.sleep(0.05)
+            finally:
+                await first.close()
+
+            second = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
+            await second.start()
+            try:
+                status = second.get_status()
+                assert status["mode"] == "chatty"
+                assert status["temporary"] is True
+                assert status["restore_mode"] == "normal"
+                assert status["source"] == "test"
+                assert status["reason"] == "persist me"
+                assert 0.0 < float(status["expires_in_seconds"]) <= 0.2
+                await asyncio.sleep(0.2)
+                assert second.get_status()["mode"] == "normal"
+                assert second.get_status()["temporary"] is False
+            finally:
+                await second.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+            cfg.control.state_path = old_state_path
+
+    asyncio.run(_runner())
+
+
+def test_speech_gate_agent_restores_permanent_mode_after_restart(tmp_path):
+    async def _runner() -> None:
+        class DummyBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict]] = []
+                self.subscriptions: dict[str, object] = {}
+
+            def subscribe(self, topic: str, handler):
+                self.subscriptions[topic] = handler
+
+            def unsubscribe(self, topic: str, handler):
+                current = self.subscriptions.get(topic)
+                if current is handler:
+                    del self.subscriptions[topic]
+
+            async def publish(self, topic: str, **payload):
+                self.events.append((topic, payload))
+
+        old_names = list(cfg.speech_gate.assistant_names)
+        old_patterns_file = cfg.speech_gate.patterns_file
+        old_identity_file = cfg.speech_gate.identity_file
+        old_state_path = cfg.control.state_path
+        cfg.speech_gate.assistant_names = ["kissa"]
+        cfg.speech_gate.patterns_file = None
+        cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
+        cfg.control.state_path = str(tmp_path / "runtime_state.json")
+        try:
+            first = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
+            await first.start()
+            try:
+                await first.set_mode("standby", ttl_seconds=5.0, source="test")
+                await first.set_mode("mute", source="test", reason="keep it")
+            finally:
+                await first.close()
+
+            second = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
+            await second.start()
+            try:
+                status = second.get_status()
+                assert status["mode"] == "mute"
+                assert status["temporary"] is False
+                assert status["source"] == "test"
+                assert status["reason"] == "keep it"
+            finally:
+                await second.close()
+        finally:
+            cfg.speech_gate.assistant_names = old_names
+            cfg.speech_gate.patterns_file = old_patterns_file
+            cfg.speech_gate.identity_file = old_identity_file
+            cfg.control.state_path = old_state_path
+
+    asyncio.run(_runner())
+
+
 def test_speech_gate_agent_uses_mode_active_at_segment_start():
     async def _runner() -> None:
         class DummyBus:
