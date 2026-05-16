@@ -93,12 +93,26 @@ class RuntimeConfig:
 
 
 @dataclass(slots=True)
+class EmojiDisplayConfig:
+    enabled: bool = False
+    url: str = "http://127.0.0.1:18791"
+    token: str | None = None
+    timeout_s: float = 0.25
+    hold_ms: int = 1200
+    mode: str = "replace"
+    source: str = "listener"
+    send: str = "all"
+    clear_on_interrupt: bool = True
+
+
+@dataclass(slots=True)
 class SpeakerConfig:
     enabled: bool = False
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     piper: PiperConfig = field(default_factory=PiperConfig)
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
     speaker: RuntimeConfig = field(default_factory=RuntimeConfig)
+    emoji_display: EmojiDisplayConfig = field(default_factory=EmojiDisplayConfig)
 
     @classmethod
     def load(cls, path: str | None = None) -> "SpeakerConfig":
@@ -146,6 +160,7 @@ class SpeakerConfig:
             piper=_merge_dataclass(self.piper, data.get("piper")),
             playback=_merge_dataclass(self.playback, data.get("playback")),
             speaker=_merge_dataclass(self.speaker, runtime_data),
+            emoji_display=_merge_dataclass(self.emoji_display, data.get("emoji_display")),
         )
 
     def apply_env(self) -> "SpeakerConfig":
@@ -153,6 +168,7 @@ class SpeakerConfig:
         piper = self.piper
         playback = self.playback
         speaker = self.speaker
+        emoji_display = self.emoji_display
 
         if enabled := os.getenv("SPEAKER_ENABLED"):
             enabled_value = _parse_bool_value(enabled, self.enabled)
@@ -199,6 +215,33 @@ class SpeakerConfig:
                 playback,
                 ducking=replace(playback.ducking, volume_scale=float(ducking_scale)),
             )
+        if emoji_enabled := os.getenv("EMOJI_DISPLAY_ENABLED"):
+            emoji_display = replace(
+                emoji_display,
+                enabled=_parse_bool_value(emoji_enabled, emoji_display.enabled),
+            )
+        if emoji_url := os.getenv("EMOJI_DISPLAY_URL"):
+            emoji_display = replace(emoji_display, url=emoji_url)
+        if emoji_token := os.getenv("EMOJI_DISPLAY_TOKEN"):
+            emoji_display = replace(emoji_display, token=emoji_token)
+        if emoji_timeout := os.getenv("EMOJI_DISPLAY_TIMEOUT_S"):
+            emoji_display = replace(emoji_display, timeout_s=float(emoji_timeout))
+        if emoji_hold := os.getenv("EMOJI_DISPLAY_HOLD_MS"):
+            emoji_display = replace(emoji_display, hold_ms=int(emoji_hold))
+        if emoji_mode := os.getenv("EMOJI_DISPLAY_MODE"):
+            emoji_display = replace(emoji_display, mode=emoji_mode)
+        if emoji_source := os.getenv("EMOJI_DISPLAY_SOURCE"):
+            emoji_display = replace(emoji_display, source=emoji_source)
+        if emoji_send := os.getenv("EMOJI_DISPLAY_SEND"):
+            emoji_display = replace(emoji_display, send=emoji_send)
+        if emoji_clear := os.getenv("EMOJI_DISPLAY_CLEAR_ON_INTERRUPT"):
+            emoji_display = replace(
+                emoji_display,
+                clear_on_interrupt=_parse_bool_value(
+                    emoji_clear,
+                    emoji_display.clear_on_interrupt,
+                ),
+            )
 
         return replace(
             self,
@@ -207,12 +250,15 @@ class SpeakerConfig:
             piper=piper,
             playback=_normalize_playback_config(playback),
             speaker=_normalize_runtime_config(speaker),
+            emoji_display=_normalize_emoji_display_config(emoji_display),
         )
 
     def to_redacted_dict(self) -> dict[str, Any]:
         data = asdict(self)
         if data.get("gateway", {}).get("token"):
             data["gateway"]["token"] = "<redacted>"
+        if data.get("emoji_display", {}).get("token"):
+            data["emoji_display"]["token"] = "<redacted>"
         return data
 
 
@@ -254,9 +300,23 @@ def _merge_dataclass(current: Any, raw: Any) -> Any:
             values["ducking"] = ducking
     if isinstance(current, RuntimeConfig) and "streaming" in values:
         values["streaming"] = _merge_dataclass(current.streaming, values["streaming"])
+    if isinstance(current, EmojiDisplayConfig):
+        if "enabled" in values:
+            values["enabled"] = _parse_bool_value(values["enabled"], current.enabled)
+        if "timeout_s" in values:
+            values["timeout_s"] = float(values["timeout_s"])
+        if "hold_ms" in values:
+            values["hold_ms"] = int(values["hold_ms"])
+        if "clear_on_interrupt" in values:
+            values["clear_on_interrupt"] = _parse_bool_value(
+                values["clear_on_interrupt"],
+                current.clear_on_interrupt,
+            )
     updated = replace(current, **values)
     if isinstance(updated, PlaybackConfig):
         return _normalize_playback_config(updated)
+    if isinstance(updated, EmojiDisplayConfig):
+        return _normalize_emoji_display_config(updated)
     return _normalize_runtime_config(updated)
 
 
@@ -291,6 +351,34 @@ def _normalize_playback_config(config: PlaybackConfig) -> PlaybackConfig:
             fade_in_ms=max(0, int(config.ducking.fade_in_ms)),
             fade_out_ms=max(0, int(config.ducking.fade_out_ms)),
         ),
+    )
+
+
+def _normalize_emoji_display_config(config: EmojiDisplayConfig) -> EmojiDisplayConfig:
+    mode = str(config.mode or "replace").strip().casefold()
+    if mode not in {"replace", "queue"}:
+        raise ValueError("speaker.emoji_display.mode must be 'replace' or 'queue'")
+    send = str(config.send or "all").strip().casefold()
+    if send not in {"all", "first", "none"}:
+        raise ValueError("speaker.emoji_display.send must be 'all', 'first', or 'none'")
+    url = str(config.url or "http://127.0.0.1:18791").strip().rstrip("/")
+    if not url:
+        url = "http://127.0.0.1:18791"
+    token = config.token
+    if isinstance(token, str):
+        token = token.strip() or None
+    source = str(config.source or "listener").strip() or "listener"
+    return replace(
+        config,
+        enabled=bool(config.enabled),
+        url=url,
+        token=token,
+        timeout_s=max(0.05, float(config.timeout_s)),
+        hold_ms=max(0, int(config.hold_ms)),
+        mode=mode,
+        source=source,
+        send=send,
+        clear_on_interrupt=bool(config.clear_on_interrupt),
     )
 
 

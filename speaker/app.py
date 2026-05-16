@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 
 from .config import SpeakerConfig
+from .emoji import EmojiDisplayClient, extract_emoji_for_speech
 from .events import ChatSpeechRouter, SpeechSegment
 from .gateway import GatewayClient, GatewayError
 from .messages import ExtractedMessage, MessageDeduper, extract_latest_assistant_text
@@ -35,10 +36,11 @@ class SpeakerService:
     async def run_until_disconnect(self) -> None:
         gateway = self.gateway or GatewayClient(self.config.gateway)
         speech = self.speech or PiperSpeechEngine(self.config.piper, self.config.playback)
+        emoji_display = EmojiDisplayClient(self.config.emoji_display)
         deduper = MessageDeduper()
         router = ChatSpeechRouter(self.config.gateway, self.config.speaker.streaming)
         queue: asyncio.Queue[SpeechSegment] = asyncio.Queue(maxsize=self.config.speaker.queue_size)
-        worker = asyncio.create_task(self._speech_worker(queue, speech))
+        worker = asyncio.create_task(self._speech_worker(queue, speech, emoji_display))
 
         try:
             await gateway.connect()
@@ -184,12 +186,37 @@ class SpeakerService:
             timeout_s=self.config.gateway.request_timeout_s,
         )
 
-    async def _speech_worker(self, queue: asyncio.Queue[SpeechSegment], speech: SpeechEngine) -> None:
+    async def _speech_worker(
+        self,
+        queue: asyncio.Queue[SpeechSegment],
+        speech: SpeechEngine,
+        emoji_display: EmojiDisplayClient,
+    ) -> None:
         while True:
             segment = await queue.get()
             try:
+                parsed = extract_emoji_for_speech(segment.text)
+                if parsed.tokens:
+                    log.debug(
+                        "Extracted %d emoji(s) from segment id=%s symbols=%s",
+                        len(parsed.tokens),
+                        segment.identifier,
+                        "".join(token.symbol for token in parsed.tokens),
+                    )
+                    await emoji_display.show_tokens(
+                        parsed.tokens,
+                        run_id=segment.run_id,
+                        segment_id=segment.identifier,
+                    )
+                if not parsed.speech_text:
+                    log.info(
+                        "Skipping speech for emoji-only segment id=%s run_id=%s",
+                        segment.identifier,
+                        segment.run_id,
+                    )
+                    continue
                 log.info("Speaking assistant reply %s", segment.identifier)
-                await speech.speak(segment.text)
+                await speech.speak(parsed.speech_text)
             except Exception as exc:  # noqa: BLE001 - speech errors should not stop listening
                 log.warning("Speech failed for %s: %s", segment.identifier, exc)
             finally:

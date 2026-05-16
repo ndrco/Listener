@@ -116,6 +116,11 @@ For spoken replies to work, Listener needs:
 - a valid voice model at `speaker.piper.model`;
 - a working playback command such as `/usr/bin/paplay`.
 
+Optional emoji display support is configured under `speaker.emoji_display`.
+Listener removes emoji from the text sent to Piper, then forwards extracted
+symbols to an external HTTP service such as the sibling `emoji-display` project.
+The hardware/COM connection intentionally stays outside Listener.
+
 The repository `config/config.json` currently contains a machine-specific example
 pointing at a sibling `/home/re/src/Speaker` checkout. On another machine you
 should either replace those paths or set `speaker.enabled=false` until your
@@ -170,6 +175,7 @@ Look for the Speaker chain:
 
 ```bash
 rg "SpeakerAgent: (connected|final event needs history check|history check produced|queued speech segment|speaking assistant reply|speech failed|interrupted|dropped)" /tmp/listener-speaker.log
+rg "EmojiDisplay|extracted .* emoji|emoji-only" /tmp/listener-speaker.log
 ```
 
 How to read it:

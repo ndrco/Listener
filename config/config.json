@@ -37,7 +37,7 @@
     "piper": {
       "command": "/home/re/src/Speaker/.venv/bin/python3",
       "model": "/home/re/src/Speaker/models/ru_RU-irina-medium.onnx",
-      "volume": 1.8,
+      "volume": 1.0,
       "sentence_silence": 0.25,
       "timeout_s": 120
     },
@@ -50,6 +50,17 @@
         "fade_in_ms": 200,
         "fade_out_ms": 1000
       }
+    },
+    "emoji_display": {
+      "enabled": false,
+      "url": "http://127.0.0.1:18791",
+      "token": null,
+      "timeout_s": 0.25,
+      "hold_ms": 1200,
+      "mode": "replace",
+      "source": "listener",
+      "send": "all",
+      "clear_on_interrupt": true
     },
     "streaming": {
       "chunking": "sentence",

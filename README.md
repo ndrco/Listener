@@ -241,6 +241,10 @@ assistant replies locally. It requires all of the following:
 - a valid voice model at `speaker.piper.model`;
 - a playback command such as `/usr/bin/paplay`.
 
+Optionally, `speaker.emoji_display` can point to a separate
+`emoji-display` daemon. Listener strips emoji from text before Piper and sends
+the extracted symbols to that HTTP service; it does not open serial/COM ports.
+
 Quick checks:
 
 ```bash
@@ -323,6 +327,7 @@ For runtime diagnostics, start Listener in DEBUG mode and inspect Speaker logs:
 ```bash
 .venv/bin/python main.py 2>&1 | tee /tmp/listener-speaker.log
 rg "SpeakerAgent: (connected|final event needs history check|history check produced|queued speech segment|speaking assistant reply|speech failed|interrupted|dropped)" /tmp/listener-speaker.log
+rg "EmojiDisplay|extracted .* emoji|emoji-only" /tmp/listener-speaker.log
 ```
 
 This is especially helpful when a final sentence is visible in OpenClaw but was

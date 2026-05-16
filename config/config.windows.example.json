@@ -9,7 +9,17 @@
     "command": "wsl -d <DistroName> -- openclaw"
   },
   "speaker": {
-    "enabled": false
+    "enabled": false,
+    "emoji_display": {
+      "enabled": false,
+      "url": "http://127.0.0.1:18791",
+      "timeout_s": 0.25,
+      "hold_ms": 1200,
+      "mode": "replace",
+      "source": "listener",
+      "send": "all",
+      "clear_on_interrupt": true
+    }
   },
   "indicators": {
     "enabled": true,

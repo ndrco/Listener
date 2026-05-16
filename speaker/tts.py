@@ -17,6 +17,7 @@ from audio.ducking import (
 )
 
 from .config import PiperConfig, PlaybackConfig
+from .emoji import extract_emoji_for_speech
 
 
 class SpeechError(RuntimeError):
@@ -37,7 +38,10 @@ class PiperSpeechEngine:
         self.playback = playback
 
     async def speak(self, text: str) -> None:
-        units = split_speech_units(text)
+        parsed = extract_emoji_for_speech(text)
+        if parsed.tokens:
+            log.debug("PiperSpeechEngine: stripped %d emoji(s) before synthesis", len(parsed.tokens))
+        units = split_speech_units(parsed.speech_text)
         if not units:
             return
         with tempfile.TemporaryDirectory(prefix="speaker-") as tmp:

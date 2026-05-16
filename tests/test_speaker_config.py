@@ -149,6 +149,47 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.playback.ducking.fade_out_ms, 45)
         self.assertTrue(config.playback.ducking.enabled)
 
+    def test_emoji_display_config_is_normalized(self):
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "emoji_display": {
+                    "enabled": "yes",
+                    "url": "http://127.0.0.1:18791/",
+                    "token": " secret ",
+                    "timeout_s": 0,
+                    "hold_ms": -5,
+                    "mode": "QUEUE",
+                    "source": " test ",
+                    "send": "FIRST",
+                    "clear_on_interrupt": "false"
+                  }
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            with patch("speaker.config.DEFAULT_CONFIG_PATH", config_path):
+                config = SpeakerConfig.load()
+
+        self.assertTrue(config.emoji_display.enabled)
+        self.assertEqual(config.emoji_display.url, "http://127.0.0.1:18791")
+        self.assertEqual(config.emoji_display.token, "secret")
+        self.assertEqual(config.emoji_display.timeout_s, 0.05)
+        self.assertEqual(config.emoji_display.hold_ms, 0)
+        self.assertEqual(config.emoji_display.mode, "queue")
+        self.assertEqual(config.emoji_display.source, "test")
+        self.assertEqual(config.emoji_display.send, "first")
+        self.assertFalse(config.emoji_display.clear_on_interrupt)
+
+    def test_redacts_emoji_display_token(self):
+        config = SpeakerConfig()
+        config.emoji_display.token = "secret"
+
+        self.assertEqual(config.to_redacted_dict()["emoji_display"]["token"], "<redacted>")
+
 
 if __name__ == "__main__":
     unittest.main()

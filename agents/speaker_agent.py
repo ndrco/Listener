@@ -9,6 +9,7 @@ from typing import Callable
 
 from core.config import cfg
 from speaker.config import SpeakerConfig
+from speaker.emoji import EmojiDisplayClient, extract_emoji_for_speech
 from speaker.events import ChatSpeechRouter, SpeechSegment
 from speaker.gateway import GatewayClient, GatewayError
 from speaker.messages import ExtractedMessage, MessageDeduper, extract_latest_assistant_text
@@ -26,8 +27,10 @@ class SpeechPlaybackController:
         speech: SpeechEngine,
         queue_size: int,
         enabled: bool = True,
+        emoji_display: EmojiDisplayClient | None = None,
     ) -> None:
         self._speech = speech
+        self._emoji_display = emoji_display
         self._queue: asyncio.Queue[SpeechSegment | None] = asyncio.Queue(
             maxsize=max(1, int(queue_size or 1))
         )
@@ -89,6 +92,8 @@ class SpeechPlaybackController:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if self._emoji_display is not None:
+            await self._emoji_display.clear(reason=str(reason or "interrupt"))
         if dropped:
             log.info(
                 "SpeakerAgent: interrupted playback reason=%s run_id=%s dropped=%d",
@@ -106,6 +111,9 @@ class SpeechPlaybackController:
             "current": current.identifier if current else None,
             "current_run_id": current.run_id if current else None,
             "last_interrupt_reason": self._last_interrupt_reason,
+            "emoji_display": self._emoji_display.get_status()
+            if self._emoji_display is not None
+            else None,
         }
 
     def _drain_queue(self, *, run_id: str | None) -> int:
@@ -140,8 +148,31 @@ class SpeechPlaybackController:
                 self._queue.task_done()
                 continue
             self._current_segment = segment
+            parsed = extract_emoji_for_speech(segment.text)
+            if parsed.tokens:
+                log.debug(
+                    "SpeakerAgent: extracted %d emoji(s) from segment id=%s symbols=%s",
+                    len(parsed.tokens),
+                    segment.identifier,
+                    "".join(token.symbol for token in parsed.tokens),
+                )
+                if self._emoji_display is not None:
+                    await self._emoji_display.show_tokens(
+                        parsed.tokens,
+                        run_id=segment.run_id,
+                        segment_id=segment.identifier,
+                    )
+            if not parsed.speech_text:
+                log.info(
+                    "SpeakerAgent: skipped speech for emoji-only segment id=%s run_id=%s",
+                    segment.identifier,
+                    segment.run_id,
+                )
+                self._queue.task_done()
+                self._current_segment = None
+                continue
             self._current_task = asyncio.create_task(
-                self._speech.speak(segment.text),
+                self._speech.speak(parsed.speech_text),
                 name=f"Speaker.speak.{segment.identifier}",
             )
             try:
@@ -172,10 +203,12 @@ class SpeakerAgent:
         self._config = config or cfg.speaker
         self._gateway_factory = gateway_factory or (lambda gateway_cfg: GatewayClient(gateway_cfg))
         self._speech = speech or PiperSpeechEngine(self._config.piper, self._config.playback)
+        self._emoji_display = EmojiDisplayClient(self._config.emoji_display)
         self._playback = SpeechPlaybackController(
             speech=self._speech,
             queue_size=self._config.speaker.queue_size,
             enabled=bool(self._config.enabled),
+            emoji_display=self._emoji_display,
         )
         self._running = False
         self._gateway_task: asyncio.Task[None] | None = None
@@ -234,6 +267,7 @@ class SpeakerAgent:
             "session_key": self._config.gateway.session_key,
             "gateway_url": self._config.gateway.url,
             "last_error": self._last_error or None,
+            "emoji_display": self._emoji_display.get_status(),
             "playback": self._playback.get_status(),
         }
 

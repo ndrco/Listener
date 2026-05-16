@@ -26,6 +26,23 @@ class BlockingSpeech:
             raise
 
 
+class RecordingEmojiDisplay:
+    def __init__(self) -> None:
+        self.shown = []
+        self.cleared = []
+
+    async def show_tokens(self, tokens, *, run_id, segment_id):
+        self.shown.append(([token.symbol for token in tokens], run_id, segment_id))
+        return True
+
+    async def clear(self, *, reason):
+        self.cleared.append(reason)
+        return True
+
+    def get_status(self):
+        return {"enabled": True}
+
+
 def test_speech_playback_controller_interrupts_current_speech():
     async def _runner() -> None:
         speech = BlockingSpeech()
@@ -48,6 +65,71 @@ def test_speech_playback_controller_interrupts_current_speech():
             assert speech.cancelled is True
             assert controller.get_status()["current"] is None
             assert controller.get_status()["last_interrupt_reason"] == "test"
+        finally:
+            await controller.close()
+
+    asyncio.run(_runner())
+
+
+def test_speech_playback_controller_strips_and_forwards_emoji():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            def __init__(self) -> None:
+                self.spoken = []
+                self.done = asyncio.Event()
+
+            async def speak(self, text: str) -> None:
+                self.spoken.append(text)
+                self.done.set()
+
+        speech = RecordingSpeech()
+        display = RecordingEmojiDisplay()
+        controller = SpeechPlaybackController(
+            speech=speech,
+            queue_size=4,
+            enabled=True,
+            emoji_display=display,
+        )
+        await controller.start()
+        try:
+            assert controller.enqueue(SpeechSegment("seg-1", "Привет 🙂!", "run-1"))
+            await asyncio.wait_for(speech.done.wait(), timeout=1.0)
+
+            assert speech.spoken == ["Привет!"]
+            assert display.shown == [(["🙂"], "run-1", "seg-1")]
+        finally:
+            await controller.close()
+
+    asyncio.run(_runner())
+
+
+def test_speech_playback_controller_skips_emoji_only_segment():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            def __init__(self) -> None:
+                self.spoken = []
+
+            async def speak(self, text: str) -> None:
+                self.spoken.append(text)
+
+        speech = RecordingSpeech()
+        display = RecordingEmojiDisplay()
+        controller = SpeechPlaybackController(
+            speech=speech,
+            queue_size=4,
+            enabled=True,
+            emoji_display=display,
+        )
+        await controller.start()
+        try:
+            assert controller.enqueue(SpeechSegment("seg-emoji", "✨", "run-1"))
+            for _ in range(10):
+                if display.shown:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert speech.spoken == []
+            assert display.shown == [(["✨"], "run-1", "seg-emoji")]
         finally:
             await controller.close()
 
