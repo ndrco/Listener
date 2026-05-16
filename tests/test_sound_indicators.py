@@ -39,3 +39,53 @@ def test_sound_indicator_player_respects_per_event_toggles():
             cfg.indicators.forwarded = old_forwarded
 
     asyncio.run(_runner())
+
+
+def test_sound_indicator_player_ducks_around_playback(monkeypatch):
+    async def _runner() -> None:
+        calls: list[tuple[str, object]] = []
+
+        class FakeDucker:
+            def __init__(self, config, *, exclude_speaker=True):
+                calls.append(("init", exclude_speaker))
+
+            async def duck(self):
+                calls.append(("duck", None))
+
+            async def restore(self):
+                calls.append(("restore", None))
+
+        player = SoundIndicatorPlayer()
+        old_enabled = cfg.indicators.enabled
+        old_forwarded = cfg.indicators.forwarded
+        old_ducking_enabled = cfg.indicators.ducking.enabled
+        try:
+            cfg.indicators.enabled = True
+            cfg.indicators.forwarded = True
+            cfg.indicators.ducking.enabled = True
+            monkeypatch.setattr("core.sound_indicators.PulseAudioDucker", FakeDucker)
+            monkeypatch.setattr(
+                player,
+                "_play_sync",
+                lambda kind: calls.append(("play", kind)),
+            )
+
+            assert await player.emit(INDICATOR_FORWARDED)
+            for _ in range(100):
+                if ("restore", None) in calls:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await player.close()
+            cfg.indicators.enabled = old_enabled
+            cfg.indicators.forwarded = old_forwarded
+            cfg.indicators.ducking.enabled = old_ducking_enabled
+
+        assert calls[:4] == [
+            ("init", False),
+            ("duck", None),
+            ("play", INDICATOR_FORWARDED),
+            ("restore", None),
+        ]
+
+    asyncio.run(_runner())

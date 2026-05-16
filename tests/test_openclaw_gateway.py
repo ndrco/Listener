@@ -448,6 +448,39 @@ def test_openclaw_input_agent_steers_barge_in_phrase(monkeypatch):
     asyncio.run(_runner())
 
 
+def test_openclaw_input_agent_interrupts_speaker_before_barge_in_steer(monkeypatch):
+    async def _runner() -> None:
+        calls: list[str] = []
+
+        async def _fake_steer(session_key: str, message: str):
+            calls.append("steer")
+            return {"ok": True, "steered": True}
+
+        async def _fake_interrupt() -> int:
+            calls.append("interrupt")
+            return 1
+
+        async def _fake_emit(kind: str) -> bool:
+            return True
+
+        agent = OpenClawInputAgent(on_barge_in_interrupt=_fake_interrupt)
+        monkeypatch.setattr("agents.openclaw_input_agent.steer_openclaw_chat_session", _fake_steer)
+        monkeypatch.setattr("agents.openclaw_input_agent.emit_indicator", _fake_emit)
+
+        await agent._send_or_steer(  # pylint: disable=protected-access
+            {
+                "message": "Kissa, нет",
+                "idempotencyKey": "abc",
+                "sessionKey": "main",
+                "_listener_barge_in": True,
+            }
+        )
+
+        assert calls == ["interrupt", "steer"]
+
+    asyncio.run(_runner())
+
+
 def test_openclaw_input_agent_marks_explicit_barge_in_phrase_only():
     async def _runner() -> None:
         agent = OpenClawInputAgent()

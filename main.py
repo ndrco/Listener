@@ -8,6 +8,7 @@ from typing import Optional
 from agents.audio_agent import AudioAgent
 from agents.control_agent import ControlAgent
 from agents.openclaw_input_agent import OpenClawInputAgent
+from agents.speaker_agent import SpeakerAgent
 from agents.speech_gate_agent import SpeechGateAgent
 from core.bus import bus
 from core.config import cfg, load
@@ -34,6 +35,7 @@ async def main() -> None:
     speech_gate: Optional[SpeechGateAgent] = None
     control: Optional[ControlAgent] = None
     openclaw_input: Optional[OpenClawInputAgent] = None
+    speaker: Optional[SpeakerAgent] = None
 
     if getattr(cfg, "audio", None):
         audio = AudioAgent()
@@ -43,10 +45,32 @@ async def main() -> None:
             logging.exception("main: failed to start AudioAgent")
             audio = None
 
-    openclaw_input = OpenClawInputAgent()
+    speaker = SpeakerAgent()
+    try:
+        await speaker.start()
+    except Exception:
+        logging.exception("main: failed to start SpeakerAgent")
+        speaker = None
+
+    async def _interrupt_speaker_for_barge_in() -> int:
+        if speaker is None:
+            return 0
+        return await speaker.interrupt(reason="barge_in")
+
+    openclaw_input = OpenClawInputAgent(
+        on_barge_in_interrupt=_interrupt_speaker_for_barge_in,
+    )
+
+    async def _handle_local_stop() -> int:
+        dropped = 0
+        if openclaw_input is not None:
+            dropped += int(await openclaw_input.clear_pending_messages() or 0)
+        if speaker is not None:
+            dropped += int(await speaker.interrupt(reason="local_stop") or 0)
+        return dropped
 
     speech_gate = SpeechGateAgent(
-        on_local_stop=openclaw_input.clear_pending_messages,
+        on_local_stop=_handle_local_stop,
     )
     try:
         await speech_gate.start()
@@ -55,7 +79,7 @@ async def main() -> None:
         speech_gate = None
 
     if speech_gate is not None:
-        control = ControlAgent(speech_gate=speech_gate)
+        control = ControlAgent(speech_gate=speech_gate, speaker=speaker)
         try:
             await control.start()
         except Exception:
@@ -129,6 +153,12 @@ async def main() -> None:
         try:
             if openclaw_input:
                 await openclaw_input.close()
+        except Exception:
+            pass
+
+        try:
+            if speaker:
+                await speaker.close()
         except Exception:
             pass
 

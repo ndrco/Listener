@@ -23,13 +23,54 @@
     "gateway_token": null,
     "call_timeout_s": 12.0
   },
+  "speaker": {
+    "enabled": true,
+    "mode": "streaming",
+    "speak_existing_on_start": false,
+    "queue_size": 32,
+    "gateway": {
+      "url": "ws://127.0.0.1:18789",
+      "session_key": "main",
+      "history_limit": 8,
+      "history_max_chars": 12000
+    },
+    "piper": {
+      "command": "/home/re/src/Speaker/.venv/bin/python3",
+      "model": "/home/re/src/Speaker/models/ru_RU-irina-medium.onnx",
+      "volume": 1.8,
+      "sentence_silence": 0.25,
+      "timeout_s": 120
+    },
+    "playback": {
+      "command": "/usr/bin/paplay",
+      "timeout_s": 120,
+      "ducking": {
+        "enabled": true,
+        "volume_scale": 0.6,
+        "fade_in_ms": 200,
+        "fade_out_ms": 1000
+      }
+    },
+    "streaming": {
+      "chunking": "sentence",
+      "min_chars": 40,
+      "max_chars": 700,
+      "flush_on_final": true
+    }
+  },
   "indicators": {
     "enabled": true,
     "backend": "auto",
     "output_device_index": null,
     "sample_rate": 24000,
-    "volume": 0.18,
+    "volume": 0.9,
     "queue_maxsize": 8,
+    "ducking": {
+      "enabled": true,
+      "volume_scale": 0.35,
+      "fade_in_ms": 20,
+      "fade_out_ms": 80
+    },
     "rejected": false,
     "forwarded": true,
     "local_handled": true,

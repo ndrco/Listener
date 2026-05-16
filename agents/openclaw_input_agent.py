@@ -8,7 +8,7 @@ import json
 import logging
 import subprocess
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from agents.openclaw_gateway import (
     build_openclaw_base_command,
@@ -29,8 +29,14 @@ log = logging.getLogger(__name__)
 class OpenClawInputAgent:
     """Consumes speech phrases and sends them to OpenClaw `chat.send`."""
 
-    def __init__(self, *, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        bus: EventBus | None = None,
+        on_barge_in_interrupt: Callable[[], Awaitable[int] | int | None] | None = None,
+    ) -> None:
         self._bus = bus or default_bus
+        self._on_barge_in_interrupt = on_barge_in_interrupt
         self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
         self._running = False
@@ -153,6 +159,7 @@ class OpenClawInputAgent:
 
         message = str(params.get("message") or "").strip()
         session_key = str(params.get("sessionKey") or "main").strip() or "main"
+        await self._interrupt_speaker_for_barge_in()
         try:
             steer_result = await steer_openclaw_chat_session(session_key, message)
         except Exception as exc:
@@ -173,6 +180,16 @@ class OpenClawInputAgent:
                 )
 
         await self._send_chat_send(params)
+
+    async def _interrupt_speaker_for_barge_in(self) -> None:
+        if self._on_barge_in_interrupt is None:
+            return
+        try:
+            maybe_result = self._on_barge_in_interrupt()
+            if asyncio.iscoroutine(maybe_result):
+                await maybe_result
+        except Exception:
+            log.exception("OpenClawInputAgent: failed to interrupt Speaker for barge-in")
 
     async def _send_chat_send(self, params: dict[str, Any]) -> None:
         params = {

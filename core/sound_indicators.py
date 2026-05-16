@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from audio.ducking import PulseAudioDucker
 from core.config import cfg
 
 log = logging.getLogger(__name__)
@@ -137,12 +138,16 @@ class SoundIndicatorPlayer:
             kind = await queue.get()
             if kind is None:
                 break
+            ducker = PulseAudioDucker(cfg.indicators.ducking, exclude_speaker=False)
             try:
+                await ducker.duck()
                 await asyncio.to_thread(self._play_sync, kind)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("sound_indicators: failed to play %s tone", kind)
+            finally:
+                await ducker.restore()
 
     def _play_sync(self, kind: str) -> None:
         backend_name, backend_module = self._get_backend()

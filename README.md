@@ -18,6 +18,7 @@ platform-specific sample config in `config/config.windows.example.json`.
 - SpeechGate filtering with assistant name loaded from OpenClaw `IDENTITY.md`.
 - Runtime SpeechGate control API and `utils/listenerctl.py`.
 - Optional short audio indicators for rejected, forwarded and local control events.
+- Integrated local Speaker playback for OpenClaw replies through Piper.
 - Bundled OpenClaw workspace skill: `openclaw/skills/listener-control`.
 
 ## Pipeline
@@ -69,6 +70,7 @@ Important sections:
 
 - `control` - local runtime HTTP API for SpeechGate mode control.
 - `openclaw` - OpenClaw CLI/gateway forwarding settings.
+- `speaker` - integrated OpenClaw reply TTS, Piper playback and TTS ducking.
 - `indicators` - short notification tones for SpeechGate/OpenClaw events.
 - `speech_gate` - directed-speech rules, identity file and classifier settings.
 - `audio.input` - microphone sample rate, channels, chunk size and device.
@@ -91,6 +93,11 @@ When `indicators.enabled=true`, Listener plays short tones for four cases:
 Each of these can be toggled independently through `indicators.rejected`,
 `indicators.forwarded`, `indicators.local_handled`, and
 `indicators.interrupted`.
+
+`indicators.ducking` can lower other PulseAudio/PipeWire streams while each
+short tone is playing. Unlike Speaker's own TTS ducking, indicator ducking also
+ducks any currently playing Speaker stream, so local stop/interruption beeps are
+audible.
 
 The default `requirements.txt` is tuned for CUDA 12.8 PyTorch. For CPU-only
 machines, set `audio.stt.device="cpu"` and `speech_gate.model.device="cpu"` in
@@ -213,6 +220,9 @@ When `main.py` is running, SpeechGate modes can be changed without restarting:
 .venv/bin/python utils/listenerctl.py chatty --ttl 600
 .venv/bin/python utils/listenerctl.py standby --ttl 300
 .venv/bin/python utils/listenerctl.py normal
+.venv/bin/python utils/listenerctl.py speaker status
+.venv/bin/python utils/listenerctl.py speaker off
+.venv/bin/python utils/listenerctl.py speaker on
 ```
 
 The status line includes mode, temporary/permanent state, expiry time, and
@@ -245,6 +255,11 @@ anything is forwarded to OpenClaw:
 These local commands are swallowed by `SpeechGateAgent` and are not forwarded as
 regular chat input.
 
+When integrated Speaker is enabled, `Имя, стоп` and explicit barge-in phrases
+also interrupt local TTS playback and clear queued spoken segments. OpenClaw can
+toggle spoken replies through the bundled skill with `speaker on`, `speaker off`
+and `speaker status`.
+
 ## Tests
 
 ```bash
@@ -255,7 +270,7 @@ python -m pytest -q
 Current expected result:
 
 ```text
-52 passed
+131 passed
 ```
 
 ## Documentation

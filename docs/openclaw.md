@@ -5,6 +5,8 @@ Listener integrates with OpenClaw in two directions:
 1. Accepted voice phrases are sent to OpenClaw through `openclaw gateway call chat.send`.
 2. OpenClaw can control Listener's SpeechGate mode through the bundled
    `listener-control` workspace skill and `utils/listenerctl.py`.
+3. Listener can voice OpenClaw replies locally through the integrated Speaker
+   agent and lets OpenClaw toggle spoken replies on or off.
 
 ## Sending Voice Phrases to OpenClaw
 
@@ -65,6 +67,8 @@ Listener starts a local HTTP control API when `control.enabled=true`:
 GET  /health
 GET  /speech-gate/status
 POST /speech-gate/mode
+GET  /speaker/status
+POST /speaker/enabled
 ```
 
 Example:
@@ -79,6 +83,9 @@ Switch modes:
 curl -s -X POST http://127.0.0.1:18790/speech-gate/mode \
   -H 'Content-Type: application/json' \
   -d '{"mode":"chatty","ttl_seconds":600,"source":"curl"}' | jq
+curl -s -X POST http://127.0.0.1:18790/speaker/enabled \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":false,"source":"curl","reason":"quiet"}' | jq
 ```
 
 Supported modes:
@@ -106,6 +113,11 @@ These local commands are intentionally swallowed by Listener and are not sent as
 regular `chat.send` input. OpenClaw's own control skill is still useful for
 typed commands, richer mode changes such as temporary `chatty`, and manual
 inspection through `listenerctl`.
+
+When integrated Speaker is enabled, `Имя, стоп` also interrupts current TTS
+playback and clears queued speech. Explicit barge-in phrases forwarded through
+`sessions.steer` interrupt Speaker playback before the steer request waits for
+OpenClaw.
 
 ## Install the OpenClaw Skill
 
@@ -160,6 +172,9 @@ EOF
 .venv/bin/python utils/listenerctl.py mute
 .venv/bin/python utils/listenerctl.py standby --ttl 300
 .venv/bin/python utils/listenerctl.py normal
+.venv/bin/python utils/listenerctl.py speaker status
+.venv/bin/python utils/listenerctl.py speaker off
+.venv/bin/python utils/listenerctl.py speaker on
 ```
 
 `listenerctl` reads:
@@ -177,3 +192,14 @@ OpenClaw `TOOLS.md`, or Listener `config/config.json` before delegating to
 
 If the control API is exposed on anything other than loopback, configure a
 non-empty `control.token`.
+
+## Speaker Control Skill Mapping
+
+The bundled `listener-control` skill exposes spoken-reply controls:
+
+- "turn spoken replies off", "do not read answers aloud" -> `speaker off`
+- "turn spoken replies on", "read answers aloud again" -> `speaker on`
+- spoken reply / voice output status -> `speaker status`
+
+After changing Speaker state, the skill should run `speaker status` and report
+whether spoken replies are on or off.

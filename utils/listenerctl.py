@@ -59,6 +59,30 @@ def build_parser() -> argparse.ArgumentParser:
         add_set_mode_options(mode_alias)
         mode_alias.set_defaults(resource="speech-gate", action="set-mode", mode=mode)
 
+    speaker = subparsers.add_parser("speaker", help="Control integrated Speaker playback.")
+    speaker_subparsers = speaker.add_subparsers(dest="action", required=True)
+
+    speaker_status = speaker_subparsers.add_parser("status", help="Show Speaker status.")
+    speaker_status.add_argument("--json", action="store_true", help="Print raw JSON response.")
+
+    for action, enabled in (("on", True), ("off", False)):
+        speaker_mode = speaker_subparsers.add_parser(action, help=f"Turn Speaker {action}.")
+        speaker_mode.add_argument("--reason", default="", help="Human-readable reason.")
+        speaker_mode.add_argument("--source", default="listenerctl", help="Change source label.")
+        speaker_mode.add_argument("--json", action="store_true", help="Print raw JSON response.")
+        speaker_mode.set_defaults(enabled=enabled)
+
+    voice_status = subparsers.add_parser("voice-status", help="Shortcut for: speaker status.")
+    voice_status.add_argument("--json", action="store_true", help="Print raw JSON response.")
+    voice_status.set_defaults(resource="speaker", action="status")
+
+    for alias, enabled in (("voice-on", True), ("voice-off", False)):
+        voice_alias = subparsers.add_parser(alias, help=f"Shortcut for: speaker {'on' if enabled else 'off'}.")
+        voice_alias.add_argument("--reason", default="", help="Human-readable reason.")
+        voice_alias.add_argument("--source", default="listenerctl", help="Change source label.")
+        voice_alias.add_argument("--json", action="store_true", help="Print raw JSON response.")
+        voice_alias.set_defaults(resource="speaker", action="enabled", enabled=enabled)
+
     return parser
 
 
@@ -138,6 +162,31 @@ def format_speech_gate_status(speech_gate: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def format_speaker_status(speaker: dict[str, Any]) -> str:
+    enabled = "on" if bool(speaker.get("enabled")) else "off"
+    running = "running" if bool(speaker.get("running")) else "stopped"
+    connected = "connected" if bool(speaker.get("connected")) else "disconnected"
+    playback = speaker.get("playback") if isinstance(speaker.get("playback"), dict) else {}
+    parts = [
+        f"speaker={enabled}",
+        f"agent={running}",
+        f"gateway={connected}",
+        f"mode={speaker.get('mode', 'unknown')}",
+        f"session={speaker.get('session_key', '-')}",
+        f"queue={playback.get('queue_size', 0)}",
+    ]
+    current = playback.get("current")
+    if current:
+        parts.append(f"current={current}")
+    reason = playback.get("last_interrupt_reason")
+    if reason:
+        parts.append(f"last_interrupt={json.dumps(str(reason), ensure_ascii=False)}")
+    error = speaker.get("last_error")
+    if error:
+        parts.append(f"error={json.dumps(str(error), ensure_ascii=False)}")
+    return " ".join(parts)
+
+
 def _format_seconds(value: Any) -> str:
     try:
         return f"{float(value):.1f}s"
@@ -170,6 +219,21 @@ def _print_response(data: dict[str, Any], *, raw_json: bool) -> None:
     print(format_speech_gate_status(speech_gate))
 
 
+def _print_speaker_response(data: dict[str, Any], *, raw_json: bool) -> None:
+    if raw_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if not data.get("ok"):
+        print(f"error: {data.get('error', 'unknown_error')}", file=sys.stderr)
+        return
+    speaker = data.get("speaker")
+    if not isinstance(speaker, dict):
+        print("ok")
+        return
+    print(format_speaker_status(speaker))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -189,6 +253,27 @@ def main(argv: list[str] | None = None) -> int:
             payload=payload,
         )
         _print_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "speaker" and args.action == "status":
+        status, data = request_json(args.url, "/speaker/status", token=args.token)
+        _print_speaker_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "speaker" and args.action in {"on", "off", "enabled"}:
+        enabled = bool(args.enabled)
+        status, data = request_json(
+            args.url,
+            "/speaker/enabled",
+            method="POST",
+            token=args.token,
+            payload={
+                "enabled": enabled,
+                "source": args.source,
+                "reason": args.reason,
+            },
+        )
+        _print_speaker_response(data, raw_json=args.json)
         return 0 if 200 <= status < 300 and data.get("ok") else 1
 
     parser.error("unsupported command")

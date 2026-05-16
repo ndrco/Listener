@@ -624,8 +624,9 @@ class SpeechDirectionGate:
             return GateDecision(False, 0.0, 0.0, 0.0, continuation, "standby")
 
         rule_score, has_name = self._rules_score(normalized)
+        has_leading_name = self.find_leading_assistant_name(normalized) is not None
 
-        if active_mode == SpeechGateMode.MUTE and not has_name:
+        if active_mode == SpeechGateMode.MUTE and not has_leading_name:
             return GateDecision(False, rule_score, 0.0, rule_score, continuation, "mute")
 
         in_attention = active_mode == SpeechGateMode.CHATTY or (

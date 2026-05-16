@@ -52,6 +52,33 @@ class FakeSpeechGate:
         return self.get_status()
 
 
+class FakeSpeaker:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.calls: list[dict] = []
+
+    def get_status(self) -> dict:
+        return {
+            "running": True,
+            "enabled": self.enabled,
+            "connected": False,
+            "mode": "streaming",
+            "session_key": "main",
+            "playback": {"queue_size": 0},
+        }
+
+    async def set_enabled(self, enabled, *, source="api", reason="") -> dict:
+        self.enabled = bool(enabled)
+        self.calls.append(
+            {
+                "enabled": bool(enabled),
+                "source": source,
+                "reason": reason,
+            }
+        )
+        return self.get_status()
+
+
 def _save_control_cfg() -> tuple:
     return (
         cfg.control.enabled,
@@ -131,6 +158,64 @@ def test_control_agent_status_and_set_mode_api():
             )
             assert status_code == 400
             assert data["ok"] is False
+        finally:
+            await agent.close()
+            _restore_control_cfg(saved)
+
+    asyncio.run(_runner())
+
+
+def test_control_agent_speaker_status_and_enabled_api():
+    async def _runner() -> None:
+        saved = _save_control_cfg()
+        cfg.control.enabled = True
+        cfg.control.host = "127.0.0.1"
+        cfg.control.port = 0
+        cfg.control.token = None
+        cfg.control.max_ttl_seconds = 100.0
+        speaker = FakeSpeaker()
+        agent = ControlAgent(
+            speech_gate=FakeSpeechGate(),  # type: ignore[arg-type]
+            speaker=speaker,
+        )
+        try:
+            await agent.start()
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/speaker/status",
+            )
+            assert status_code == 200
+            assert data["speaker"]["enabled"] is True
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/speaker/enabled",
+                method="POST",
+                payload={
+                    "enabled": False,
+                    "source": "test",
+                    "reason": "quiet",
+                },
+            )
+            assert status_code == 200
+            assert data["speaker"]["enabled"] is False
+            assert speaker.calls[-1] == {
+                "enabled": False,
+                "source": "test",
+                "reason": "quiet",
+            }
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/speaker/enabled",
+                method="POST",
+                payload={"enabled": "maybe"},
+            )
+            assert status_code == 400
+            assert data["error"] == "invalid_enabled"
         finally:
             await agent.close()
             _restore_control_cfg(saved)

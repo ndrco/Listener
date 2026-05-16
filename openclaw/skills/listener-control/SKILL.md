@@ -23,6 +23,10 @@ scripts/listener-control status
 ```
 
 ```bash
+scripts/listener-control speaker status
+```
+
+```bash
 scripts/listener-control normal --reason "normal listening"
 ```
 
@@ -38,6 +42,14 @@ scripts/listener-control chatty --ttl 600 --reason "conversation mode"
 scripts/listener-control standby --reason "standby requested"
 ```
 
+```bash
+scripts/listener-control speaker off --reason "disable spoken replies"
+```
+
+```bash
+scripts/listener-control speaker on --reason "enable spoken replies"
+```
+
 The helper delegates to `listenerctl.py`. Direct commands also work when `LISTENER_HOME` is known, e.g. `$LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py status`.
 
 ## Intent Mapping
@@ -46,6 +58,10 @@ The helper delegates to `listenerctl.py`. Direct commands also work when `LISTEN
 - Quiet mode, name-only mode, stop listening to background speech, active listening off -> `mute`.
 - Do not listen, stop listening completely, standby mode, go deaf -> `standby`. If the user gives a duration you can use `--ttl`, for example `--ttl 600`.
 - Normal mode, come back, listen normally, leave active listening mode -> `normal`.
+- Disable spoken replies, turn voice output off, stop reading answers aloud, do not speak answers -> `speaker off`.
+- Enable spoken replies, turn voice output on, read answers aloud again -> `speaker on`.
+- If the user asks about spoken reply / voice output status, run `speaker status`.
 - If the user asks about listening activity/status, run `status` first and report the current mode.
 
 After changing mode, run `status` and summarize the resulting mode briefly. The CLI output includes mode, permanent/temporary state, expiry time, and restore mode. Do not use `chatty` without `--ttl`.
+After changing Speaker state, run `speaker status` and summarize whether spoken replies are on or off.

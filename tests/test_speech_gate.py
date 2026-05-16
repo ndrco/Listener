@@ -222,6 +222,16 @@ def test_speech_gate_modes_keep_expected_behavior():
     assert decision.reason == "standby"
 
 
+def test_speech_gate_mute_requires_leading_assistant_name():
+    gate = _build_gate()
+    gate.patterns["assistant_names"] = {"марина"}
+    gate.set_mode(SpeechGateMode.MUTE)
+
+    assert gate.should_allow("Марина, что там?").allowed is True
+    assert gate.should_allow("Я думаю марина потом не будет").allowed is False
+    assert gate.should_allow("Да полмарина не будет. Ну, что там?").allowed is False
+
+
 def test_speech_gate_mode_override_uses_segment_time_mode():
     gate = _build_gate()
     gate.set_mode(SpeechGateMode.NORMAL)

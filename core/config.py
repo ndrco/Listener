@@ -4,6 +4,8 @@ from pathlib import Path
 import json
 from typing import Any
 
+from speaker.config import SpeakerConfig
+
 
 def _clean_topic_value(value: object, current: str) -> str:
     if value in (None, ""):
@@ -109,6 +111,16 @@ class OpenClawInputCfg:
 
 
 @dataclass
+class DuckingCfg:
+    """System output volume ducking settings."""
+
+    enabled: bool = False
+    volume_scale: float = 0.35
+    fade_in_ms: int = 20
+    fade_out_ms: int = 80
+
+
+@dataclass
 class SoundIndicatorsCfg:
     """Short audio cues for SpeechGate/OpenClaw workflow events."""
 
@@ -118,6 +130,7 @@ class SoundIndicatorsCfg:
     sample_rate: int = 24000
     volume: float = 0.18
     queue_maxsize: int = 8
+    ducking: DuckingCfg = field(default_factory=DuckingCfg)
     rejected: bool = True
     forwarded: bool = True
     local_handled: bool = True
@@ -374,6 +387,7 @@ class Config:
         self.events = EventsCfg()
         self.speech_gate = SpeechGateCfg()
         self.audio = AudioCfg()
+        self.speaker = SpeakerConfig.from_openclaw_defaults()
         self.apply_event_topic_defaults()
 
     def apply_event_topic_defaults(self) -> None:
@@ -441,6 +455,21 @@ def load(path: str | None = None) -> None:
                 if timeout_val > 0:
                     openclaw_cfg.call_timeout_s = timeout_val
 
+        # speaker
+        speaker_section = _as_dict(data.get("speaker"))
+        if speaker_section:
+            cfg.speaker = cfg.speaker.merge_dict(speaker_section)
+        speaker_gateway_defaults: dict[str, Any] = {}
+        speaker_gateway_section = _as_dict(speaker_section.get("gateway"))
+        if "session_key" not in speaker_gateway_section:
+            speaker_gateway_defaults["session_key"] = cfg.openclaw.session_key
+        if "url" not in speaker_gateway_section and cfg.openclaw.gateway_url:
+            speaker_gateway_defaults["url"] = cfg.openclaw.gateway_url
+        if "token" not in speaker_gateway_section and cfg.openclaw.gateway_token:
+            speaker_gateway_defaults["token"] = cfg.openclaw.gateway_token
+        if speaker_gateway_defaults:
+            cfg.speaker = cfg.speaker.merge_dict({"gateway": speaker_gateway_defaults})
+
         # sound indicators
         indicators_section = _as_dict(data.get("indicators"))
         if indicators_section:
@@ -491,6 +520,38 @@ def load(path: str | None = None) -> None:
                     queue_maxsize = indicators_cfg.queue_maxsize
                 if queue_maxsize >= 1:
                     indicators_cfg.queue_maxsize = queue_maxsize
+
+            ducking_section = _as_dict(indicators_section.get("ducking"))
+            if ducking_section:
+                ducking_cfg = indicators_cfg.ducking
+                if "enabled" in ducking_section:
+                    ducking_cfg.enabled = bool(
+                        ducking_section.get("enabled", ducking_cfg.enabled)
+                    )
+                if "volume_scale" in ducking_section:
+                    try:
+                        volume_scale = float(
+                            ducking_section.get("volume_scale", ducking_cfg.volume_scale)
+                        )
+                    except (TypeError, ValueError):
+                        volume_scale = ducking_cfg.volume_scale
+                    ducking_cfg.volume_scale = _clip(volume_scale, 0.0, 1.0)
+                if "fade_in_ms" in ducking_section:
+                    try:
+                        fade_in_ms = int(
+                            ducking_section.get("fade_in_ms", ducking_cfg.fade_in_ms)
+                        )
+                    except (TypeError, ValueError):
+                        fade_in_ms = ducking_cfg.fade_in_ms
+                    ducking_cfg.fade_in_ms = max(0, fade_in_ms)
+                if "fade_out_ms" in ducking_section:
+                    try:
+                        fade_out_ms = int(
+                            ducking_section.get("fade_out_ms", ducking_cfg.fade_out_ms)
+                        )
+                    except (TypeError, ValueError):
+                        fade_out_ms = ducking_cfg.fade_out_ms
+                    ducking_cfg.fade_out_ms = max(0, fade_out_ms)
 
             for key in ("rejected", "forwarded", "local_handled", "interrupted"):
                 if key in indicators_section:

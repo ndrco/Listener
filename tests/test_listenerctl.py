@@ -7,7 +7,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-from utils.listenerctl import build_parser, build_set_mode_payload, format_speech_gate_status  # noqa: E402
+from utils.listenerctl import (  # noqa: E402
+    build_parser,
+    build_set_mode_payload,
+    format_speaker_status,
+    format_speech_gate_status,
+)
 
 
 def test_listenerctl_set_mode_payload_shape():
@@ -76,6 +81,25 @@ def test_listenerctl_mode_shortcut_payload_shape():
     }
 
 
+def test_listenerctl_speaker_commands_parse():
+    parser = build_parser()
+    status = parser.parse_args(["speaker", "status", "--json"])
+    off = parser.parse_args(["speaker", "off", "--reason", "quiet"])
+    alias = parser.parse_args(["voice-on", "--source", "openclaw"])
+
+    assert status.resource == "speaker"
+    assert status.action == "status"
+    assert status.json is True
+    assert off.resource == "speaker"
+    assert off.action == "off"
+    assert off.enabled is False
+    assert off.reason == "quiet"
+    assert alias.resource == "speaker"
+    assert alias.action == "enabled"
+    assert alias.enabled is True
+    assert alias.source == "openclaw"
+
+
 def test_listenerctl_formats_permanent_status():
     assert format_speech_gate_status(
         {
@@ -104,3 +128,25 @@ def test_listenerctl_formats_temporary_status():
     assert "restore=normal" in text
     assert "source=openclaw" in text
     assert 'reason="quiet, please"' in text
+
+
+def test_listenerctl_formats_speaker_status():
+    text = format_speaker_status(
+        {
+            "enabled": False,
+            "running": True,
+            "connected": False,
+            "mode": "streaming",
+            "session_key": "main",
+            "playback": {
+                "queue_size": 2,
+                "current": "seg-1",
+                "last_interrupt_reason": "voice command",
+            },
+        }
+    )
+
+    assert text.startswith("speaker=off agent=running gateway=disconnected mode=streaming")
+    assert "queue=2" in text
+    assert "current=seg-1" in text
+    assert 'last_interrupt="voice command"' in text

@@ -19,8 +19,14 @@ log = logging.getLogger(__name__)
 class ControlAgent:
     """Small stdlib-only HTTP API bound to the local Listener process."""
 
-    def __init__(self, *, speech_gate: SpeechGateAgent | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        speech_gate: SpeechGateAgent | None = None,
+        speaker: Any | None = None,
+    ) -> None:
         self._speech_gate = speech_gate
+        self._speaker = speaker
         self._server: asyncio.AbstractServer | None = None
         self._host = ""
         self._port = 0
@@ -108,6 +114,10 @@ class ControlAgent:
                 await self._handle_status(writer)
             elif method == "POST" and path == "/speech-gate/mode":
                 await self._handle_set_mode(writer, body)
+            elif method == "GET" and path == "/speaker/status":
+                await self._handle_speaker_status(writer)
+            elif method == "POST" and path == "/speaker/enabled":
+                await self._handle_speaker_enabled(writer, body)
             else:
                 await self._send_json(writer, 404, {"ok": False, "error": "not_found"})
         except Exception:
@@ -130,6 +140,8 @@ class ControlAgent:
                     "health": "GET /health",
                     "speech_gate_status": "GET /speech-gate/status",
                     "speech_gate_mode": "POST /speech-gate/mode",
+                    "speaker_status": "GET /speaker/status",
+                    "speaker_enabled": "POST /speaker/enabled",
                 },
             },
         )
@@ -195,6 +207,47 @@ class ControlAgent:
 
         await self._send_json(writer, 200, {"ok": True, "speech_gate": status})
 
+    async def _handle_speaker_status(self, writer: asyncio.StreamWriter) -> None:
+        if self._speaker is None:
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "speaker_unavailable"},
+            )
+            return
+        await self._send_json(writer, 200, {"ok": True, "speaker": self._speaker.get_status()})
+
+    async def _handle_speaker_enabled(
+        self,
+        writer: asyncio.StreamWriter,
+        body: bytes,
+    ) -> None:
+        if self._speaker is None:
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "speaker_unavailable"},
+            )
+            return
+        try:
+            payload = json.loads(body.decode("utf-8") if body else "{}")
+        except json.JSONDecodeError:
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_json"})
+            return
+        if not isinstance(payload, dict):
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_payload"})
+            return
+        enabled = self._parse_bool(payload.get("enabled"))
+        if enabled is None:
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_enabled"})
+            return
+        status = await self._speaker.set_enabled(
+            enabled,
+            source=str(payload.get("source") or "api"),
+            reason=str(payload.get("reason") or ""),
+        )
+        await self._send_json(writer, 200, {"ok": True, "speaker": status})
+
     async def _read_request(
         self, reader: asyncio.StreamReader
     ) -> tuple[str, str, dict[str, str], bytes] | None:
@@ -246,6 +299,20 @@ class ControlAgent:
             return ipaddress.ip_address(text).is_loopback
         except ValueError:
             return False
+
+    @staticmethod
+    def _parse_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on", "enabled"}:
+                return True
+            if lowered in {"0", "false", "no", "off", "disabled"}:
+                return False
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        return None
 
     @staticmethod
     async def _send_json(
