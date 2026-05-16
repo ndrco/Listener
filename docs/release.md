@@ -14,8 +14,9 @@ Use this checklist before publishing the first GitHub release.
 
 ```bash
 . .venv/bin/activate
-python -m py_compile main.py agents/control_agent.py agents/speech_gate_agent.py \
-  llm/speech_gate.py utils/listenerctl.py
+python -m py_compile main.py agents/control_agent.py agents/openclaw_input_agent.py \
+  agents/speaker_agent.py agents/speech_gate_agent.py audio/ducking.py \
+  llm/speech_gate.py speaker/*.py utils/listenerctl.py
 python -m pytest -q
 ```
 
@@ -26,6 +27,9 @@ Manual smoke:
 curl -s http://127.0.0.1:18790/ | jq
 .venv/bin/python utils/listenerctl.py speech-gate set-mode chatty --ttl 10
 .venv/bin/python utils/listenerctl.py speech-gate status
+.venv/bin/python utils/listenerctl.py speaker status
+.venv/bin/python utils/listenerctl.py speaker off
+.venv/bin/python utils/listenerctl.py speaker on
 ```
 
 ## Suggested First Tag
@@ -48,3 +52,4 @@ Suggested release notes:
 - SpeechGate directed-speech filtering with OpenClaw identity discovery.
 - Runtime SpeechGate control API and `listenerctl`.
 - OpenClaw workspace skill for voice-mode control.
+- Integrated Speaker playback for OpenClaw replies, with ducking and runtime control.

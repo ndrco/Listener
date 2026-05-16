@@ -1,7 +1,15 @@
 {
+  "control": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 18790
+  },
   "openclaw": {
     "enabled": true,
     "command": "wsl -d <DistroName> -- openclaw"
+  },
+  "speaker": {
+    "enabled": false
   },
   "indicators": {
     "enabled": true,

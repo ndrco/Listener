@@ -29,6 +29,12 @@ Microphone -> AudioProcessor -> BufferedSpeechWriter -> WhisperStreamingTranscri
            -> OpenClawInputAgent -> OpenClaw
 ```
 
+Reply path when spoken replies are enabled:
+
+```text
+OpenClaw Gateway -> SpeakerAgent -> PiperSpeechEngine -> paplay
+```
+
 Core modules:
 
 - `agents/` - runtime orchestration.
@@ -79,6 +85,13 @@ Important sections:
 - `audio.stt` - Whisper model and decoding settings.
 - `events` - internal EventBus topic names.
 
+The repository config currently contains a local-machine `speaker` example with
+paths under `/home/re/src/Speaker`. On a fresh clone you should either:
+
+- set `speaker.enabled=false` for the first run; or
+- replace `speaker.piper.command`, `speaker.piper.model`, and if needed
+  `speaker.gateway.*` with values valid on your machine.
+
 The primary SpeechGate pattern source is `config/speech_gate_patterns.json`.
 Inline pattern arrays in `config/config.json` are supported as overrides, but
 the default project config keeps them empty to avoid duplicate definitions.
@@ -123,6 +136,14 @@ Download Silero VAD:
 For Whisper, either place a local snapshot under `models/whisper`, temporarily
 set `audio.stt.local_files_only=false`, or disable STT while testing the rest of
 the pipeline.
+
+For integrated Speaker, Listener also needs a Piper model path and a working
+Piper entrypoint. The simplest self-contained setup is:
+
+- install `requirements-optional.txt` into Listener `.venv`;
+- set `speaker.piper.command` to `.venv/bin/python3`;
+- set `speaker.piper.model` to your local `.onnx` voice model;
+- or temporarily set `speaker.enabled=false`.
 
 ## Linux Audio Setup
 
@@ -210,6 +231,33 @@ as the current project path.
 Listener auto-discovers OpenClaw's assistant name from workspace `IDENTITY.md`
 using `Name:` or `Имя:`. Full guide: [docs/openclaw.md](docs/openclaw.md).
 
+## Speaker Setup
+
+The integrated Speaker subscribes to OpenClaw Gateway chat events and voices
+assistant replies locally. It requires all of the following:
+
+- OpenClaw Gateway reachable at `speaker.gateway.url` (default `ws://127.0.0.1:18789`);
+- Python environment with `piper` available through `speaker.piper.command`;
+- a valid voice model at `speaker.piper.model`;
+- a playback command such as `/usr/bin/paplay`.
+
+Quick checks:
+
+```bash
+.venv/bin/python utils/listenerctl.py speaker status
+curl -s http://127.0.0.1:18790/speaker/status | jq
+```
+
+If you do not want spoken replies during initial setup, disable them:
+
+```json
+{
+  "speaker": {
+    "enabled": false
+  }
+}
+```
+
 ## Runtime SpeechGate Control
 
 When `main.py` is running, SpeechGate modes can be changed without restarting:
@@ -235,6 +283,7 @@ curl -s http://127.0.0.1:18790/speech-gate/status | jq
 curl -s -X POST http://127.0.0.1:18790/speech-gate/mode \
   -H 'Content-Type: application/json' \
   -d '{"mode":"chatty","ttl_seconds":60,"source":"curl"}' | jq
+curl -s http://127.0.0.1:18790/speaker/status | jq
 ```
 
 Modes:
@@ -260,6 +309,26 @@ also interrupt local TTS playback and clear queued spoken segments. OpenClaw can
 toggle spoken replies through the bundled skill with `speaker on`, `speaker off`
 and `speaker status`.
 
+## Speaker Troubleshooting
+
+The most useful first signal is `speaker status`:
+
+- `agent=running gateway=connected` means Listener is subscribed to OpenClaw Gateway;
+- `speaker=off` means spoken replies are disabled by config or runtime control;
+- `error=...` points to the last gateway, Piper, or playback failure;
+- `queue` and `current` show whether speech is waiting or actively playing.
+
+For runtime diagnostics, start Listener in DEBUG mode and inspect Speaker logs:
+
+```bash
+.venv/bin/python main.py 2>&1 | tee /tmp/listener-speaker.log
+rg "SpeakerAgent: (connected|final event needs history check|history check produced|queued speech segment|speaking assistant reply|speech failed|interrupted|dropped)" /tmp/listener-speaker.log
+```
+
+This is especially helpful when a final sentence is visible in OpenClaw but was
+not spoken: the log chain shows whether the tail was missing from gateway
+streaming, dropped from the queue, interrupted, or failed in Piper/playback.
+
 ## Tests
 
 ```bash
@@ -267,11 +336,7 @@ and `speaker status`.
 python -m pytest -q
 ```
 
-Current expected result:
-
-```text
-131 passed
-```
+Expected result: the full test suite passes.
 
 ## Documentation
 

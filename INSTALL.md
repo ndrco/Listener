@@ -13,6 +13,7 @@ primary tested path.
 - `pactl` for device/source diagnostics
 - Optional: NVIDIA driver with CUDA 12.8-compatible PyTorch for GPU STT
 - Optional: OpenClaw CLI in `PATH`
+- Optional: `paplay` playback command for integrated Speaker
 
 Ubuntu/Debian packages:
 
@@ -43,6 +44,9 @@ The default `requirements.txt` is tuned for CUDA 12.8 PyTorch. On a CPU-only
 machine you can still run the audio pipeline, but set STT and speech-gate model
 devices to `cpu` in `config/config.json`.
 
+`requirements-optional.txt` now also installs `piper-tts`, which is used by the
+integrated Speaker when spoken replies are enabled.
+
 ## 3. Models
 
 Model weights are intentionally not tracked in git. The default config expects:
@@ -62,6 +66,35 @@ For Whisper, either:
 - place a compatible local snapshot under `models/whisper`;
 - set `audio.stt.local_files_only=false` for the first model download;
 - or temporarily set `audio.stt.enabled=false` while testing the rest of the app.
+
+For Speaker, provide a Piper model `.onnx` file and make sure
+`speaker.piper.command` and `speaker.piper.model` point to real local paths.
+The repository config includes an example wired to a sibling `/home/re/src/Speaker`
+checkout; on another machine you should either replace those paths or disable
+Speaker for the first run:
+
+```json
+{
+  "speaker": {
+    "enabled": false
+  }
+}
+```
+
+If you want a self-contained Listener setup, use the Listener virtualenv as the
+Piper entrypoint:
+
+```json
+{
+  "speaker": {
+    "enabled": true,
+    "piper": {
+      "command": ".venv/bin/python3",
+      "model": "/absolute/path/to/voice-model.onnx"
+    }
+  }
+}
+```
 
 For a CPU-only first run, use:
 
@@ -138,6 +171,7 @@ In another terminal, check the local control API:
 ```bash
 curl -s http://127.0.0.1:18790/ | jq
 curl -s http://127.0.0.1:18790/speech-gate/status | jq
+curl -s http://127.0.0.1:18790/speaker/status | jq
 ```
 
 Switch SpeechGate to temporary chatty mode:
@@ -150,6 +184,12 @@ Return to normal:
 
 ```bash
 .venv/bin/python utils/listenerctl.py normal
+```
+
+Check Speaker runtime state:
+
+```bash
+.venv/bin/python utils/listenerctl.py speaker status
 ```
 
 ## 6. OpenClaw Integration
@@ -228,6 +268,12 @@ After that, OpenClaw can use the `listener-control` skill for phrases like:
 Listener also reads OpenClaw assistant identity from the OpenClaw workspace
 `IDENTITY.md` automatically. Supported keys are `Name:` and `Имя:`.
 
+Spoken replies also depend on OpenClaw Gateway chat events. A healthy state is:
+
+- OpenClaw Gateway reachable at `speaker.gateway.url`;
+- `listenerctl speaker status` shows `agent=running gateway=connected`;
+- no `error=...` field in the status output.
+
 ## 7. Tests
 
 ```bash
@@ -235,8 +281,4 @@ Listener also reads OpenClaw assistant identity from the OpenClaw workspace
 python -m pytest -q
 ```
 
-Expected result for the current release prep:
-
-```text
-52 passed
-```
+Expected result: the full test suite passes.
