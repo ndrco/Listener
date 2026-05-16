@@ -1,6 +1,7 @@
+# Exact whole-phrase matches after punctuation/case normalization.
+[phrases]
 ДИНАМИЧНАЯ МУЗЫКА
 СПОКОЙНАЯ МУЗЫКА
-1988
 Субтитры посвящены
 Продолжение следует
 Подпишись
@@ -11,6 +12,7 @@
 Субтитры создавал DimaTorzok
 Субтитры добавил DimaTorzok
 Субтитры создал DimaTorzok
+Субтитры подогнал «Симон»
 Спасибо за просмотр
 До новых встреч
 Всем пока
@@ -23,3 +25,7 @@
 Угу
 Ух
 Ха ха
+
+# Single words to remove from a recognized phrase.
+[words]
+1988

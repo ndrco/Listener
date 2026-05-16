@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import re
 import tempfile
@@ -156,9 +157,16 @@ def build_playback_args(config: PlaybackConfig, output: Path) -> list[str]:
         "--stream-name",
         config.stream_name,
         "--property=application.id=speaker",
-        "--property=media.role=a11y",
+        "--property=state.restore-props=false",
+        "--property=state.restore-target=false",
+        f"--property=module-stream-restore.id={build_stream_restore_id(output)}",
         str(output),
     ]
+
+
+def build_stream_restore_id(output: Path) -> str:
+    digest = hashlib.sha1(str(output).encode("utf-8")).hexdigest()[:16]
+    return f"speaker-tts-{digest}"
 
 
 def _has_speakable_content(value: str) -> bool:

@@ -158,22 +158,47 @@ def test_whisper_engine_falls_back_to_cpu_on_cuda_oom_during_transcribe(
     )
 
 
-def test_whisper_engine_blacklist_matches_inside_phrase_ignoring_punctuation():
+def test_whisper_engine_blacklist_splits_phrases_and_words():
     engine = WhisperEngine(WhisperSttCfg(enabled=False))
-    engine._blacklist = {  # pylint: disable=protected-access
-        engine._normalize_blacklist_phrase("1988"),  # pylint: disable=protected-access
-        engine._normalize_blacklist_phrase("Поехали"),  # pylint: disable=protected-access
-        engine._normalize_blacklist_phrase("Продолжение следует"),  # pylint: disable=protected-access
+    engine._blacklist_phrases = {  # pylint: disable=protected-access
+        engine._normalize_blacklist_phrase("Спасибо"),  # pylint: disable=protected-access
+        engine._normalize_blacklist_phrase("Всем пока"),  # pylint: disable=protected-access
+    }
+    engine._blacklist_words = {  # pylint: disable=protected-access
+        engine._normalize_blacklist_word("1988"),  # pylint: disable=protected-access
     }
 
-    assert engine._is_blacklisted("1988") is True  # pylint: disable=protected-access
-    assert engine._is_blacklisted("1988, 1988, 1988") is True  # pylint: disable=protected-access
+    assert engine._apply_blacklist("Спасибо!") is None  # pylint: disable=protected-access
+    assert engine._apply_blacklist("Всем пока...") is None  # pylint: disable=protected-access
     assert (
-        engine._is_blacklisted("Тут опять 1988 в середине фразы") is True
+        engine._apply_blacklist("Спасибо, Марина!") == "Спасибо, Марина!"
     )  # pylint: disable=protected-access
-    assert engine._is_blacklisted("Поехали!") is True  # pylint: disable=protected-access
-    assert engine._is_blacklisted("Ну что, поехали.") is True  # pylint: disable=protected-access
     assert (
-        engine._is_blacklisted("А дальше... продолжение следует?") is True
+        engine._apply_blacklist("Спасибо, спасибо!") == "Спасибо, спасибо!"
     )  # pylint: disable=protected-access
-    assert engine._is_blacklisted("19880") is False  # pylint: disable=protected-access
+    assert (
+        engine._apply_blacklist("1988, 1988! Ура! Здорово! 1888!")
+        == "Ура! Здорово! 1888!"
+    )  # pylint: disable=protected-access
+    assert engine._apply_blacklist("1988, 1988.") is None  # pylint: disable=protected-access
+    assert engine._apply_blacklist("19880") == "19880"  # pylint: disable=protected-access
+
+
+def test_whisper_engine_loads_blacklist_sections(tmp_path):
+    blacklist = tmp_path / "blacklist.txt"
+    blacklist.write_text(
+        """
+        [phrases]
+        Спасибо
+
+        [words]
+        1988
+        """,
+        encoding="utf-8",
+    )
+    engine = WhisperEngine(WhisperSttCfg(enabled=False, blacklist_path=str(blacklist)))
+
+    engine._load_blacklist()  # pylint: disable=protected-access
+
+    assert engine._blacklist_phrases == {"спасибо"}  # pylint: disable=protected-access
+    assert engine._blacklist_words == {"1988"}  # pylint: disable=protected-access

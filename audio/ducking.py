@@ -8,13 +8,17 @@ import json
 import logging
 import math
 import subprocess
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Iterable
 
 log = logging.getLogger(__name__)
 
 _ACTIVE_DUCKERS: set["PulseAudioDucker"] = set()
+_DUCKING_ACTIVE_SCALES: dict[int, list[float]] = {}
 _DUCKING_CLEANUP_INSTALLED = False
+_DUCKING_LOCK: asyncio.Lock | None = None
+_DUCKING_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+_DUCKING_ORIGINALS: dict[int, SinkInputVolume] = {}
 _DUCKING_STEP_MS = 20
 
 
@@ -26,10 +30,12 @@ class DuckingError(RuntimeError):
 class SinkInputVolume:
     sink_input_id: int
     volumes: list[int]
+    channel_names: list[str] = field(default_factory=list)
     application_id: str = ""
     application_name: str = ""
     media_name: str = ""
     media_role: str = ""
+    node_name: str = ""
 
 
 class PulseAudioDucker:
@@ -39,6 +45,7 @@ class PulseAudioDucker:
         self.config = config
         self.exclude_speaker = exclude_speaker
         self._snapshot: list[SinkInputVolume] = []
+        self._volume_scale = 1.0
 
     async def duck(self) -> None:
         if not bool(getattr(self.config, "enabled", False)):
@@ -46,43 +53,80 @@ class PulseAudioDucker:
         volume_scale = float(getattr(self.config, "volume_scale", 1.0) or 1.0)
         if volume_scale >= 1.0:
             return
+        self._volume_scale = min(1.0, max(0.0, volume_scale))
         _install_ducking_cleanup()
-        try:
-            self._snapshot = await _list_sink_inputs(exclude_speaker=self.exclude_speaker)
-            if not self._snapshot:
-                return
-            _ACTIVE_DUCKERS.add(self)
-            await self._apply_steps(
-                build_ducking_steps(
-                    self._snapshot,
-                    volume_scale,
+        async with _get_ducking_lock():
+            try:
+                self._snapshot = await _list_sink_inputs(exclude_speaker=self.exclude_speaker)
+                if not self._snapshot:
+                    return
+                original = _original_targets_for_snapshot(self._snapshot)
+                _register_ducker_snapshot(self, self._snapshot)
+                target = _effective_targets_for_snapshot(self._snapshot)
+                _ACTIVE_DUCKERS.add(self)
+                log.debug(
+                    "audio.ducking: ducking %d sink input(s) scale=%.3f "
+                    "exclude_speaker=%s ids=%s",
+                    len(self._snapshot),
+                    self._volume_scale,
+                    self.exclude_speaker,
+                    [item.sink_input_id for item in self._snapshot],
+                )
+                await self._apply_steps(
+                    build_volume_transition_steps(
+                        self._snapshot,
+                        target,
+                        int(getattr(self.config, "fade_in_ms", 0) or 0),
+                    ),
                     int(getattr(self.config, "fade_in_ms", 0) or 0),
-                ),
-                int(getattr(self.config, "fade_in_ms", 0) or 0),
-            )
-        except DuckingError as exc:
-            await _restore_snapshot_best_effort(self._snapshot)
-            _ACTIVE_DUCKERS.discard(self)
-            self._snapshot = []
-            log.debug("audio.ducking: unavailable: %s", exc)
+                )
+                await _restore_route_settings_best_effort(original)
+            except DuckingError as exc:
+                original = _original_targets_for_snapshot(self._snapshot)
+                target = _release_ducker_snapshot(self)
+                await _restore_snapshot_best_effort(target)
+                await _restore_route_settings_best_effort(original)
+                _ACTIVE_DUCKERS.discard(self)
+                self._snapshot = []
+                log.debug("audio.ducking: unavailable: %s", exc)
 
     async def restore(self) -> None:
         if not bool(getattr(self.config, "enabled", False)) or not self._snapshot:
             return
-        _ACTIVE_DUCKERS.discard(self)
-        snapshot, self._snapshot = self._snapshot, []
-        try:
-            await self._apply_steps(
-                build_ducking_steps(
-                    snapshot,
-                    float(getattr(self.config, "volume_scale", 1.0) or 1.0),
-                    int(getattr(self.config, "fade_out_ms", 0) or 0),
-                    restore=True,
-                ),
-                int(getattr(self.config, "fade_out_ms", 0) or 0),
+        async with _get_ducking_lock():
+            _ACTIVE_DUCKERS.discard(self)
+            touched = self._snapshot
+            original = _original_targets_for_snapshot(touched)
+            targets = _release_ducker_snapshot(self)
+            self._snapshot = []
+            current = await _current_snapshot_for(touched)
+            if not current:
+                log.debug(
+                    "audio.ducking: restore skipped because sink input(s) disappeared ids=%s",
+                    [item.sink_input_id for item in touched],
+                )
+                await _restore_route_settings_best_effort(original)
+                _forget_inactive_originals(item.sink_input_id for item in touched)
+                return
+            log.debug(
+                "audio.ducking: restoring %d sink input(s) ids=%s",
+                len(current),
+                [item.sink_input_id for item in current],
             )
-        except DuckingError:
-            await _restore_snapshot_best_effort(snapshot)
+            try:
+                await self._apply_steps(
+                    build_volume_transition_steps(
+                        current,
+                        targets,
+                        int(getattr(self.config, "fade_out_ms", 0) or 0),
+                    ),
+                    int(getattr(self.config, "fade_out_ms", 0) or 0),
+                )
+            except DuckingError:
+                await _restore_snapshot_best_effort(targets)
+            finally:
+                await _restore_route_settings_best_effort(original)
+                _forget_inactive_originals(item.sink_input_id for item in touched)
 
     async def _apply_steps(self, steps: list[list[SinkInputVolume]], duration_ms: int) -> None:
         if not steps:
@@ -99,6 +143,85 @@ class PulseAudioDucker:
                 )
             if delay_s > 0 and index + 1 < len(steps):
                 await asyncio.sleep(delay_s)
+
+
+def _get_ducking_lock() -> asyncio.Lock:
+    global _DUCKING_LOCK, _DUCKING_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _DUCKING_LOCK is None or _DUCKING_LOCK_LOOP is not loop:
+        _DUCKING_LOCK = asyncio.Lock()
+        _DUCKING_LOCK_LOOP = loop
+    return _DUCKING_LOCK
+
+
+async def _current_snapshot_for(touched: list[SinkInputVolume]) -> list[SinkInputVolume]:
+    wanted = {item.sink_input_id for item in touched}
+    if not wanted:
+        return []
+    current = await _list_sink_inputs(exclude_speaker=False)
+    return [item for item in current if item.sink_input_id in wanted]
+
+
+def _register_ducker_snapshot(
+    ducker: PulseAudioDucker,
+    snapshot: list[SinkInputVolume],
+) -> None:
+    for item in snapshot:
+        sink_input_id = item.sink_input_id
+        if sink_input_id not in _DUCKING_ORIGINALS:
+            _DUCKING_ORIGINALS[sink_input_id] = item
+        _DUCKING_ACTIVE_SCALES.setdefault(sink_input_id, []).append(ducker._volume_scale)
+
+
+def _original_targets_for_snapshot(snapshot: list[SinkInputVolume]) -> list[SinkInputVolume]:
+    return [_DUCKING_ORIGINALS.get(item.sink_input_id, item) for item in snapshot]
+
+
+def _release_ducker_snapshot(ducker: PulseAudioDucker) -> list[SinkInputVolume]:
+    targets: list[SinkInputVolume] = []
+    touched_ids: list[int] = []
+    for item in ducker._snapshot:
+        sink_input_id = item.sink_input_id
+        touched_ids.append(sink_input_id)
+        scales = _DUCKING_ACTIVE_SCALES.get(sink_input_id)
+        if scales:
+            _remove_one_scale(scales, ducker._volume_scale)
+            if not scales:
+                _DUCKING_ACTIVE_SCALES.pop(sink_input_id, None)
+        original = _DUCKING_ORIGINALS.get(sink_input_id, item)
+        targets.append(_effective_target_for_original(original))
+    _forget_inactive_originals(touched_ids)
+    return targets
+
+
+def _remove_one_scale(scales: list[float], target: float) -> None:
+    for index, value in enumerate(scales):
+        if math.isclose(value, target):
+            scales.pop(index)
+            return
+    scales.pop()
+
+
+def _effective_targets_for_snapshot(snapshot: list[SinkInputVolume]) -> list[SinkInputVolume]:
+    targets: list[SinkInputVolume] = []
+    for item in snapshot:
+        original = _DUCKING_ORIGINALS.get(item.sink_input_id, item)
+        targets.append(_effective_target_for_original(original))
+    return targets
+
+
+def _effective_target_for_original(original: SinkInputVolume) -> SinkInputVolume:
+    scales = _DUCKING_ACTIVE_SCALES.get(original.sink_input_id) or []
+    if not scales:
+        return original
+    return _scale_sink_input(original, min(scales))
+
+
+def _forget_inactive_originals(sink_input_ids: Iterable[int]) -> None:
+    for sink_input_id in sink_input_ids:
+        if not _DUCKING_ACTIVE_SCALES.get(sink_input_id):
+            _DUCKING_ACTIVE_SCALES.pop(sink_input_id, None)
+            _DUCKING_ORIGINALS.pop(sink_input_id, None)
 
 
 async def _list_sink_inputs(*, exclude_speaker: bool = True) -> list[SinkInputVolume]:
@@ -133,6 +256,20 @@ async def _run_pactl(*args: str) -> None:
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise DuckingError(_format_subprocess_error("pactl", proc.returncode, stderr))
+
+
+async def _run_pw_metadata(*args: str) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "pw-metadata",
+        "-n",
+        "route-settings",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise DuckingError(_format_subprocess_error("pw-metadata", proc.returncode, stderr))
 
 
 def build_ducking_steps(
@@ -170,6 +307,44 @@ def build_ducking_steps(
     return steps
 
 
+def build_volume_transition_steps(
+    start_snapshot: list[SinkInputVolume],
+    target_snapshot: list[SinkInputVolume],
+    duration_ms: int,
+    *,
+    step_ms: int = _DUCKING_STEP_MS,
+) -> list[list[SinkInputVolume]]:
+    if not start_snapshot or not target_snapshot:
+        return []
+
+    targets = {item.sink_input_id: item for item in target_snapshot}
+    pairs = [
+        (start, targets[start.sink_input_id])
+        for start in start_snapshot
+        if start.sink_input_id in targets
+    ]
+    if not pairs:
+        return []
+    if duration_ms <= 0:
+        return [[target for _, target in pairs]]
+
+    interval_count = max(1, math.ceil(duration_ms / max(1, step_ms)))
+    denominator = interval_count + 1
+    steps: list[list[SinkInputVolume]] = []
+    last_signature: tuple[tuple[int, tuple[int, ...]], ...] | None = None
+    for step_index in range(1, denominator + 1):
+        progress = step_index / denominator
+        current = [
+            _interpolate_sink_input(start, target, progress)
+            for start, target in pairs
+        ]
+        signature = tuple((item.sink_input_id, tuple(item.volumes)) for item in current)
+        if signature != last_signature:
+            steps.append(current)
+            last_signature = signature
+    return steps
+
+
 def parse_sink_input_volumes(
     payload: list[object],
     *,
@@ -191,21 +366,25 @@ def parse_sink_input_volumes(
         if exclude_speaker and _is_speaker_sink_input(properties):
             continue
         channels: list[int] = []
-        for channel in raw_volume.values():
+        channel_names: list[str] = []
+        for channel_name, channel in raw_volume.items():
             if not isinstance(channel, dict):
                 continue
             value = channel.get("value")
             if isinstance(value, int) and value >= 0:
                 channels.append(value)
+                channel_names.append(str(channel_name))
         if channels:
             snapshot.append(
                 SinkInputVolume(
                     sink_input_id=sink_input_id,
                     volumes=channels,
+                    channel_names=channel_names[: len(channels)],
                     application_id=_property_text(properties.get("application.id")),
                     application_name=_property_text(properties.get("application.name")),
                     media_name=_property_text(properties.get("media.name")),
                     media_role=_property_text(properties.get("media.role")),
+                    node_name=_property_text(properties.get("node.name")),
                 )
             )
     return snapshot
@@ -223,6 +402,18 @@ async def _restore_snapshot_best_effort(snapshot: list[SinkInputVolume]) -> None
             continue
 
 
+async def _restore_route_settings_best_effort(snapshot: list[SinkInputVolume]) -> None:
+    for item in snapshot:
+        key = _wireplumber_route_settings_key(item)
+        if not key:
+            continue
+        payload = _wireplumber_route_settings_payload(item)
+        try:
+            await _run_pw_metadata("0", key, payload, "Spa:String:JSON")
+        except DuckingError as exc:
+            log.debug("audio.ducking: route-settings restore failed for %s: %s", key, exc)
+
+
 def _install_ducking_cleanup() -> None:
     global _DUCKING_CLEANUP_INSTALLED
     if _DUCKING_CLEANUP_INSTALLED:
@@ -232,15 +423,19 @@ def _install_ducking_cleanup() -> None:
 
 
 def _restore_active_duckers_sync() -> None:
-    while _ACTIVE_DUCKERS:
-        ducker = _ACTIVE_DUCKERS.pop()
-        snapshot, ducker._snapshot = ducker._snapshot, []
-        for item in snapshot:
-            _run_pactl_sync(
-                "set-sink-input-volume",
-                str(item.sink_input_id),
-                *[str(value) for value in item.volumes],
-            )
+    for ducker in list(_ACTIVE_DUCKERS):
+        ducker._snapshot = []
+    _ACTIVE_DUCKERS.clear()
+    originals = list(_DUCKING_ORIGINALS.values())
+    _DUCKING_ACTIVE_SCALES.clear()
+    _DUCKING_ORIGINALS.clear()
+    for item in originals:
+        _run_pactl_sync(
+            "set-sink-input-volume",
+            str(item.sink_input_id),
+            *[str(value) for value in item.volumes],
+        )
+        _restore_route_settings_sync(item)
 
 
 def _run_pactl_sync(*args: str) -> None:
@@ -254,15 +449,102 @@ def _run_pactl_sync(*args: str) -> None:
         log.debug("audio.ducking: synchronous restore failed for args: %s", args)
 
 
+def _run_pw_metadata_sync(*args: str) -> None:
+    result = subprocess.run(
+        ["pw-metadata", "-n", "route-settings", *args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        log.debug("audio.ducking: synchronous route-settings restore failed for args: %s", args)
+
+
 def _scale_sink_input(item: SinkInputVolume, scale: float) -> SinkInputVolume:
     return SinkInputVolume(
         sink_input_id=item.sink_input_id,
         volumes=[max(0, int(round(value * scale))) for value in item.volumes],
+        channel_names=item.channel_names,
         application_id=item.application_id,
         application_name=item.application_name,
         media_name=item.media_name,
         media_role=item.media_role,
+        node_name=item.node_name,
     )
+
+
+def _interpolate_sink_input(
+    start: SinkInputVolume,
+    target: SinkInputVolume,
+    progress: float,
+) -> SinkInputVolume:
+    volumes: list[int] = []
+    for index, target_value in enumerate(target.volumes):
+        start_value = start.volumes[index] if index < len(start.volumes) else target_value
+        value = start_value + (target_value - start_value) * progress
+        volumes.append(max(0, int(round(value))))
+    return SinkInputVolume(
+        sink_input_id=target.sink_input_id,
+        volumes=volumes,
+        channel_names=target.channel_names,
+        application_id=target.application_id,
+        application_name=target.application_name,
+        media_name=target.media_name,
+        media_role=target.media_role,
+        node_name=target.node_name,
+    )
+
+
+def _restore_route_settings_sync(item: SinkInputVolume) -> None:
+    key = _wireplumber_route_settings_key(item)
+    if not key:
+        return
+    _run_pw_metadata_sync("0", key, _wireplumber_route_settings_payload(item), "Spa:String:JSON")
+
+
+def _wireplumber_route_settings_key(item: SinkInputVolume) -> str:
+    property_name = ""
+    property_value = ""
+    for candidate_name, candidate_value in (
+        ("media.role", item.media_role),
+        ("application.id", item.application_id),
+        ("application.name", item.application_name),
+        ("media.name", item.media_name),
+        ("node.name", item.node_name),
+    ):
+        if candidate_value:
+            property_name = candidate_name
+            property_value = candidate_value
+            break
+    if not property_name:
+        return ""
+    return f"restore.stream.Output/Audio.{property_name}:{property_value}"
+
+
+def _wireplumber_route_settings_payload(item: SinkInputVolume) -> str:
+    volume_values = [round(value / 65536.0, 6) for value in item.volumes]
+    payload: dict[str, object] = {
+        "volumes": volume_values,
+        "volume": round(sum(volume_values) / len(volume_values), 6) if volume_values else 1.0,
+        "mute": False,
+    }
+    channels = [_wireplumber_channel_name(name) for name in item.channel_names]
+    channels = [name for name in channels if name]
+    if channels and len(channels) == len(volume_values):
+        payload["channels"] = channels
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _wireplumber_channel_name(name: str) -> str:
+    return {
+        "front-left": "FL",
+        "front-right": "FR",
+        "front-center": "FC",
+        "rear-left": "RL",
+        "rear-right": "RR",
+        "lfe": "LFE",
+        "mono": "MONO",
+    }.get(str(name or "").strip().casefold(), "")
 
 
 def _is_speaker_sink_input(properties: dict[object, object]) -> bool:

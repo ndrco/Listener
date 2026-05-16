@@ -37,7 +37,7 @@
     "piper": {
       "command": "/home/re/src/Speaker/.venv/bin/python3",
       "model": "/home/re/src/Speaker/models/ru_RU-irina-medium.onnx",
-      "volume": 1.0,
+      "volume": 0.7,
       "sentence_silence": 0.25,
       "timeout_s": 120
     },
@@ -46,13 +46,13 @@
       "timeout_s": 120,
       "ducking": {
         "enabled": true,
-        "volume_scale": 0.6,
+        "volume_scale": 0.5,
         "fade_in_ms": 200,
         "fade_out_ms": 1000
       }
     },
     "emoji_display": {
-      "enabled": false,
+      "enabled": true,
       "url": "http://127.0.0.1:18791",
       "token": null,
       "timeout_s": 0.25,
@@ -74,13 +74,13 @@
     "backend": "auto",
     "output_device_index": null,
     "sample_rate": 24000,
-    "volume": 0.9,
+    "volume": 0.5,
     "queue_maxsize": 8,
     "ducking": {
       "enabled": true,
       "volume_scale": 0.35,
-      "fade_in_ms": 20,
-      "fade_out_ms": 80
+      "fade_in_ms": 30,
+      "fade_out_ms": 100
     },
     "rejected": false,
     "forwarded": true,

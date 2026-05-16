@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - faster-whisper is optional at runtime
 
 log = logging.getLogger(__name__)
 _BLACKLIST_SPACE_RE = re.compile(r"\s+")
+_BLACKLIST_WORD_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -35,7 +36,8 @@ class WhisperEngine:
         self._model: Any | None = None
         self._resamplers: Dict[int, StreamingResampler] = {}
         self._transcribe_options = self._build_transcribe_options(config)
-        self._blacklist: Set[str] = set()
+        self._blacklist_phrases: Set[str] = set()
+        self._blacklist_words: Set[str] = set()
         self._requested_device = str(config.device or "auto")
         self._active_device = self._requested_device
         self._active_compute_type = str(config.compute_type) if config.compute_type else None
@@ -246,10 +248,17 @@ class WhisperEngine:
             cleaned = text.strip()
             if not cleaned:
                 continue
-            if self._is_blacklisted(cleaned):
+            filtered = self._apply_blacklist(cleaned)
+            if filtered is None:
                 log.debug("audio.stt.whisper: ignoring blacklisted phrase %r", cleaned)
                 continue
-            results.append(cleaned)
+            if filtered != cleaned:
+                log.debug(
+                    "audio.stt.whisper: removed blacklisted word(s) from %r -> %r",
+                    cleaned,
+                    filtered,
+                )
+            results.append(filtered)
         return results
 
     def _should_retry_inference_on_cpu(self, exc: Exception) -> bool:
@@ -421,11 +430,12 @@ class WhisperEngine:
     # Blacklist helpers
     # ------------------------------------------------------------------
     def _load_blacklist(self) -> None:
-        self._blacklist.clear()
+        self._blacklist_phrases.clear()
+        self._blacklist_words.clear()
 
         path = self._get_blacklist_path()
         if path is None:
-            log.info("audio.stt.whisper: blacklist disabled (download_root not configured)")
+            log.info("audio.stt.whisper: blacklist disabled (blacklist_path not configured)")
             return
 
         try:
@@ -437,14 +447,28 @@ class WhisperEngine:
             log.exception("audio.stt.whisper: failed to read blacklist at %s", path)
             return
 
-        phrases = []
+        section = "phrases"
         for raw_line in content.splitlines():
-            normalized = self._normalize_blacklist_phrase(raw_line)
-            if normalized:
-                phrases.append(normalized)
-        self._blacklist.update(phrases)
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parsed_section = _parse_blacklist_section(line)
+            if parsed_section is not None:
+                section = parsed_section
+                continue
+            if section == "words":
+                normalized_word = self._normalize_blacklist_word(line)
+                if normalized_word:
+                    self._blacklist_words.add(normalized_word)
+                continue
+            normalized_phrase = self._normalize_blacklist_phrase(line)
+            if normalized_phrase:
+                self._blacklist_phrases.add(normalized_phrase)
         log.info(
-            "audio.stt.whisper: blacklist loaded from %s (%d entries)", path, len(self._blacklist)
+            "audio.stt.whisper: blacklist loaded from %s (%d phrases, %d words)",
+            path,
+            len(self._blacklist_phrases),
+            len(self._blacklist_words),
         )
 
     def _get_blacklist_path(self) -> Path | None:
@@ -459,20 +483,22 @@ class WhisperEngine:
         return path
 
     def _is_blacklisted(self, phrase: str) -> bool:
-        if not self._blacklist:
+        if not self._blacklist_phrases:
             return False
         candidate = self._normalize_blacklist_phrase(phrase)
         if not candidate:
             return False
-        padded_candidate = f" {candidate} "
-        for blocked in self._blacklist:
-            if not blocked:
-                continue
-            if padded_candidate == f" {blocked} ":
-                return True
-            if f" {blocked} " in padded_candidate:
-                return True
-        return False
+        return candidate in self._blacklist_phrases
+
+    def _apply_blacklist(self, phrase: str) -> str | None:
+        if self._is_blacklisted(phrase):
+            return None
+        if not self._blacklist_words:
+            return phrase
+        filtered = self._remove_blacklisted_words(phrase)
+        if not self._normalize_blacklist_phrase(filtered):
+            return None
+        return filtered
 
     @staticmethod
     def _normalize_blacklist_phrase(phrase: str) -> str:
@@ -500,6 +526,58 @@ class WhisperEngine:
                 continue
             normalized_chars.append(ch)
         return _BLACKLIST_SPACE_RE.sub(" ", "".join(normalized_chars)).strip()
+
+    @classmethod
+    def _normalize_blacklist_word(cls, word: str) -> str:
+        normalized = cls._normalize_blacklist_phrase(word)
+        if " " in normalized:
+            return ""
+        return normalized
+
+    def _remove_blacklisted_words(self, phrase: str) -> str:
+        if not phrase or not self._blacklist_words:
+            return phrase
+
+        parts: list[str] = []
+        cursor = 0
+        removed = False
+        for match in _BLACKLIST_WORD_RE.finditer(phrase):
+            word = self._normalize_blacklist_word(match.group(0))
+            if word not in self._blacklist_words:
+                continue
+            parts.append(phrase[cursor : match.start()])
+            cursor = match.end()
+            removed = True
+        if not removed:
+            return phrase
+        parts.append(phrase[cursor:])
+        return _cleanup_blacklisted_word_removal("".join(parts))
+
+
+def _parse_blacklist_section(line: str) -> str | None:
+    value = line.strip().casefold()
+    if value in {"[phrases]", "phrases:", "фразы:", "[фразы]"}:
+        return "phrases"
+    if value in {"[words]", "words:", "слова:", "[слова]"}:
+        return "words"
+    return None
+
+
+def _cleanup_blacklisted_word_removal(text: str) -> str:
+    value = _BLACKLIST_SPACE_RE.sub(" ", str(text or "")).strip()
+    if not value:
+        return ""
+    value = re.sub(r"^[\s,.;:!?…]+", "", value)
+    value = re.sub(r"\s+([,.;:!?…])", r"\1", value)
+    value = re.sub(r"([,.;:])\s*([,.;:])", r"\1", value)
+    value = re.sub(r"([!?…])\s*([!?…])", r"\1", value)
+    value = re.sub(r"([,.;:])\s*([!?…])", r"\2", value)
+    value = re.sub(r"\(\s*\)", "", value)
+    value = re.sub(r"\[\s*\]", "", value)
+    value = re.sub(r"\{\s*\}", "", value)
+    value = _BLACKLIST_SPACE_RE.sub(" ", value).strip()
+    value = re.sub(r"^[\s,.;:!?…]+", "", value)
+    return value.strip()
 
 
 __all__ = ["WhisperEngine"]
