@@ -48,6 +48,8 @@ class SpeechPlaybackController:
         self._current_segment: SpeechSegment | None = None
         self._closing = False
         self._last_interrupt_reason = ""
+        self._interrupt_all_generation = 0
+        self._interrupted_run_ids: set[str] = set()
 
     async def start(self) -> None:
         if self._worker_task and not self._worker_task.done():
@@ -77,6 +79,13 @@ class SpeechPlaybackController:
     def enqueue(self, segment: SpeechSegment) -> bool:
         if not self._enabled:
             return False
+        if self._is_run_interrupted(segment.run_id):
+            log.debug(
+                "SpeakerAgent: dropped interrupted run segment id=%s run_id=%s",
+                segment.identifier,
+                segment.run_id,
+            )
+            return False
         try:
             self._queue.put_nowait(segment)
             return True
@@ -86,9 +95,16 @@ class SpeechPlaybackController:
 
     async def interrupt(self, *, reason: str, run_id: str | None = None) -> int:
         self._last_interrupt_reason = str(reason or "")
+        if run_id is None:
+            self._interrupt_all_generation += 1
+        else:
+            self._remember_interrupted_run(run_id)
         dropped = self._drain_queue(run_id=run_id)
         current = self._current_segment
         task = self._current_task
+        current_affected = current is not None and (
+            run_id is None or current.run_id == run_id
+        )
         should_cancel_current = (
             task is not None
             and not task.done()
@@ -100,6 +116,8 @@ class SpeechPlaybackController:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        elif current_affected:
+            dropped += 1
         await self._restore_run_ducking()
         if self._emoji_display is not None:
             await self._emoji_display.clear(reason=str(reason or "interrupt"))
@@ -157,7 +175,14 @@ class SpeechPlaybackController:
                 self._queue.task_done()
                 continue
             self._current_segment = segment
+            interrupt_generation = self._interrupt_all_generation
+            if self._is_segment_interrupted(segment, interrupt_generation):
+                await self._skip_interrupted_segment(segment)
+                continue
             await self._ensure_run_ducking(segment.run_id)
+            if self._is_segment_interrupted(segment, interrupt_generation):
+                await self._skip_interrupted_segment(segment)
+                continue
             parsed = extract_emoji_for_speech(segment.text)
             if parsed.tokens:
                 log.debug(
@@ -172,6 +197,9 @@ class SpeechPlaybackController:
                         run_id=segment.run_id,
                         segment_id=segment.identifier,
                     )
+            if self._is_segment_interrupted(segment, interrupt_generation):
+                await self._skip_interrupted_segment(segment)
+                continue
             if not parsed.speech_text:
                 log.info(
                     "SpeakerAgent: skipped speech for emoji-only segment id=%s run_id=%s",
@@ -217,6 +245,39 @@ class SpeechPlaybackController:
                 self._queue.task_done()
                 if self._queue.empty():
                     await self._restore_run_ducking()
+
+    async def _skip_interrupted_segment(self, segment: SpeechSegment) -> None:
+        log.debug(
+            "SpeakerAgent: skipped interrupted speech segment id=%s run_id=%s",
+            segment.identifier,
+            segment.run_id,
+        )
+        self._queue.task_done()
+        self._current_segment = None
+        if self._queue.empty():
+            await self._restore_run_ducking()
+
+    def _remember_interrupted_run(self, run_id: str) -> None:
+        normalized = str(run_id or "").strip()
+        if not normalized:
+            return
+        self._interrupted_run_ids.add(normalized)
+        if len(self._interrupted_run_ids) > 512:
+            for old_run_id in list(self._interrupted_run_ids)[:128]:
+                self._interrupted_run_ids.discard(old_run_id)
+
+    def _is_run_interrupted(self, run_id: str) -> bool:
+        return str(run_id or "").strip() in self._interrupted_run_ids
+
+    def _is_segment_interrupted(
+        self,
+        segment: SpeechSegment,
+        interrupt_generation: int,
+    ) -> bool:
+        return (
+            self._interrupt_all_generation != interrupt_generation
+            or self._is_run_interrupted(segment.run_id)
+        )
 
     async def _ensure_run_ducking(self, run_id: str) -> None:
         if self._ducking_config is None:

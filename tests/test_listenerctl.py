@@ -11,6 +11,7 @@ from utils.listenerctl import (  # noqa: E402
     build_parser,
     build_set_mode_payload,
     format_ready_status,
+    format_speech_gate_reset_status,
     format_speaker_status,
     format_speech_gate_status,
 )
@@ -106,6 +107,9 @@ def test_listenerctl_service_commands_parse():
     health = parser.parse_args(["health", "--json"])
     ready = parser.parse_args(["ready"])
     stop = parser.parse_args(["stop", "--reason", "systemd"])
+    reset = parser.parse_args(["speech-gate-reset", "--reason", "recover voice"])
+    underscore_reset = parser.parse_args(["speech_gate_reset"])
+    nested_reset = parser.parse_args(["speech-gate", "reset", "--json"])
 
     assert health.resource == "service"
     assert health.action == "health"
@@ -115,6 +119,14 @@ def test_listenerctl_service_commands_parse():
     assert stop.resource == "service"
     assert stop.action == "stop"
     assert stop.reason == "systemd"
+    assert reset.resource == "speech-gate"
+    assert reset.action == "reset"
+    assert reset.reason == "recover voice"
+    assert underscore_reset.resource == "speech-gate"
+    assert underscore_reset.action == "reset"
+    assert nested_reset.resource == "speech-gate"
+    assert nested_reset.action == "reset"
+    assert nested_reset.json is True
 
 
 def test_listenerctl_formats_permanent_status():
@@ -193,3 +205,21 @@ def test_listenerctl_formats_ready_status():
     assert "audio=failed!" in text
     assert "speaker=started" in text
     assert 'last_error="failed to start AudioAgent"' in text
+
+
+def test_listenerctl_formats_speech_gate_reset_status():
+    text = format_speech_gate_reset_status(
+        {
+            "ok": True,
+            "speech_gate": {"mode": "normal"},
+            "speaker": {"enabled": True},
+            "ducking": {
+                "restored_sink_input_ids": [26404, 35688],
+                "listener_route_keys": ["restore.stream.Output/Audio.application.id:speaker"],
+                "missing_sink_input_ids": [],
+            },
+            "dropped": 3,
+        }
+    )
+
+    assert text == "speech_gate_reset=ok mode=normal speaker=on restored=2 routes=1 dropped=3"

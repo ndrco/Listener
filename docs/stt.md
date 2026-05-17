@@ -173,6 +173,7 @@ false`) возвращается пустой список.
 .venv/bin/python utils/listenerctl.py speech-gate set-mode chatty --ttl 600
 .venv/bin/python utils/listenerctl.py speech-gate set-mode standby --ttl 300
 .venv/bin/python utils/listenerctl.py speech-gate set-mode normal
+.venv/bin/python utils/listenerctl.py speech-gate reset --reason "recover voice"
 ```
 
 `normal` отменяет временный режим. `mute` и `chatty` могут быть постоянными или
@@ -204,6 +205,11 @@ loopback, Listener требует непустой `control.token`.
 .venv/bin/python utils/listenerctl.py speaker off
 .venv/bin/python utils/listenerctl.py speaker on
 ```
+
+Команда `speech-gate reset` нужна как recovery-кнопка: она возвращает
+`speech_gate` в `normal`, заново включает `speaker` и принудительно
+восстанавливает все запомненные ducking-volume'ы, если после barge-in или
+прерванной генерации голос/beep Listener остались приглушёнными.
 
 OpenClaw-интеграция v1 реализована как workspace skill:
 

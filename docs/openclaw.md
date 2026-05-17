@@ -74,6 +74,7 @@ GET  /
 GET  /health
 GET  /speech-gate/status
 POST /speech-gate/mode
+POST /speech-gate/reset
 GET  /speaker/status
 POST /speaker/enabled
 ```
@@ -90,10 +91,18 @@ Switch modes:
 curl -s -X POST http://127.0.0.1:18790/speech-gate/mode \
   -H 'Content-Type: application/json' \
   -d '{"mode":"chatty","ttl_seconds":600,"source":"curl"}' | jq
+curl -s -X POST http://127.0.0.1:18790/speech-gate/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"curl","reason":"recover voice"}' | jq
 curl -s -X POST http://127.0.0.1:18790/speaker/enabled \
   -H 'Content-Type: application/json' \
   -d '{"enabled":false,"source":"curl","reason":"quiet"}' | jq
 ```
+
+`POST /speech-gate/reset` is a recovery endpoint for the rare case where a
+stuck barge-in or interrupted run leaves Listener's own voice cues ducked. It
+forces `speech_gate` back to `normal`, re-enables `speaker`, interrupts active
+reply playback, and restores tracked sink-input volumes.
 
 Supported modes:
 
@@ -120,6 +129,20 @@ Optional emoji display support is configured under `speaker.emoji_display`.
 Listener removes emoji from the text sent to Piper, then forwards extracted
 symbols to an external HTTP service such as the sibling `emoji-display` project.
 The hardware/COM connection intentionally stays outside Listener.
+
+In streaming mode, Listener speaks complete sentence-like chunks as they arrive
+from OpenClaw and performs a short final `chat.history` check to recover any
+tail that was visible in the UI but absent from the gateway deltas. With
+`speaker.tts_mode="persistent"` the Piper worker stays warm, and synthesis of
+the next queued segment can overlap playback of the current one. On Linux,
+`speaker.playback.backend="auto"` prefers `paplay` so the playback stream has
+stable PulseAudio/PipeWire metadata for ducking and volume recovery.
+
+Speaker ducking is per OpenClaw run: Listener lowers other applications while a
+reply is actively being spoken and restores them after the last queued segment.
+If an interrupt or barge-in leaves audio quiet, call
+`listenerctl.py speech_gate_reset` or `systemctl --user reload listener.service`
+to reset SpeechGate/Speaker and restore remembered PipeWire/PulseAudio volumes.
 
 The repository `config/config.json` currently contains a machine-specific example
 pointing at a sibling `/home/re/src/Speaker` checkout. On another machine you

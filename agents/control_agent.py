@@ -10,6 +10,7 @@ import logging
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
+from audio.ducking import restore_all_ducking
 from agents.speech_gate_agent import SpeechGateAgent
 from core.config import cfg
 
@@ -122,6 +123,8 @@ class ControlAgent:
                 await self._handle_status(writer)
             elif method == "POST" and path == "/speech-gate/mode":
                 await self._handle_set_mode(writer, body)
+            elif method == "POST" and path == "/speech-gate/reset":
+                await self._handle_speech_gate_reset(writer, body)
             elif method == "GET" and path == "/speaker/status":
                 await self._handle_speaker_status(writer)
             elif method == "POST" and path == "/speaker/enabled":
@@ -150,6 +153,7 @@ class ControlAgent:
                     "shutdown": "POST /shutdown",
                     "speech_gate_status": "GET /speech-gate/status",
                     "speech_gate_mode": "POST /speech-gate/mode",
+                    "speech_gate_reset": "POST /speech-gate/reset",
                     "speaker_status": "GET /speaker/status",
                     "speaker_enabled": "POST /speaker/enabled",
                 },
@@ -269,6 +273,70 @@ class ControlAgent:
             return
 
         await self._send_json(writer, 200, {"ok": True, "speech_gate": status})
+
+    async def _handle_speech_gate_reset(
+        self,
+        writer: asyncio.StreamWriter,
+        body: bytes,
+    ) -> None:
+        if self._speech_gate is None:
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "speech_gate_unavailable"},
+            )
+            return
+        try:
+            payload = json.loads(body.decode("utf-8") if body else "{}")
+        except json.JSONDecodeError:
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_json"})
+            return
+        if not isinstance(payload, dict):
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_payload"})
+            return
+
+        source = str(payload.get("source") or "listenerctl")
+        reason = str(payload.get("reason") or "speech_gate_reset")
+        interrupt_reason = str(payload.get("interrupt_reason") or reason)
+
+        dropped = 0
+        speaker_status = None
+        if self._speaker is not None:
+            interrupt = getattr(self._speaker, "interrupt", None)
+            if callable(interrupt):
+                maybe_dropped = interrupt(reason=interrupt_reason)
+                if asyncio.iscoroutine(maybe_dropped):
+                    maybe_dropped = await maybe_dropped
+                try:
+                    dropped += int(maybe_dropped or 0)
+                except (TypeError, ValueError):
+                    dropped += 0
+            set_enabled = getattr(self._speaker, "set_enabled", None)
+            if callable(set_enabled):
+                maybe_status = set_enabled(True, source=source, reason=reason)
+                speaker_status = await maybe_status if asyncio.iscoroutine(maybe_status) else maybe_status
+            else:
+                get_status = getattr(self._speaker, "get_status", None)
+                if callable(get_status):
+                    speaker_status = get_status()
+
+        speech_gate_status = await self._speech_gate.set_mode(
+            "normal",
+            source=source,
+            reason=reason,
+        )
+        ducking = await restore_all_ducking()
+        await self._send_json(
+            writer,
+            200,
+            {
+                "ok": True,
+                "speech_gate": speech_gate_status,
+                "speaker": speaker_status,
+                "ducking": ducking,
+                "dropped": dropped,
+            },
+        )
 
     async def _handle_speaker_status(self, writer: asyncio.StreamWriter) -> None:
         if self._speaker is None:

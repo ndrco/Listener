@@ -5,22 +5,37 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import audio.ducking as ducking_module
+from audio.ducking import (
+    PulseAudioDucker,
+    SinkInputVolume,
+    build_ducking_steps,
+    parse_sink_input_volumes,
+    restore_all_ducking,
+)
 from speaker.config import PiperConfig
 from speaker.tts import (
-    PulseAudioDucker,
+    PiperSpeechEngine,
     build_piper_args,
     build_playback_args,
-    build_ducking_steps,
     build_stream_restore_id,
-    parse_sink_input_volumes,
     resolve_piper_command,
-    SinkInputVolume,
     split_complete_speech_units,
     split_speech_units,
 )
 
 
 class SpeechUnitTests(unittest.TestCase):
+    def setUp(self):
+        self._ducking_state_dir = TemporaryDirectory()
+        self._old_ducking_state_path = ducking_module._DUCKING_STATE_PATH
+        ducking_module._DUCKING_STATE_PATH = (
+            Path(self._ducking_state_dir.name) / "ducking_state.json"
+        )
+
+    def tearDown(self):
+        ducking_module._DUCKING_STATE_PATH = self._old_ducking_state_path
+        self._ducking_state_dir.cleanup()
+
     def test_split_speech_units_keeps_trailing_emoji_separate(self):
         text = "Сисадмин в раю просит доступ root. Ему говорят: «Зачем?» Он: «Просто посмотреть». 😼"
 
@@ -111,6 +126,7 @@ class SpeechUnitTests(unittest.TestCase):
                 "Speaker",
                 "--stream-name",
                 "Speaker TTS",
+                "--volume=65536",
                 "--property=application.id=speaker",
                 "--property=state.restore-props=false",
                 "--property=state.restore-target=false",
@@ -119,6 +135,31 @@ class SpeechUnitTests(unittest.TestCase):
                 "/tmp/out.wav",
             ],
         )
+
+    def test_auto_playback_prefers_paplay_on_linux_when_available(self):
+        class PlaybackConfigStub:
+            backend = "auto"
+            command = "/bin/true"
+            timeout_s = 120
+
+        async def _runner():
+            engine = PiperSpeechEngine(PiperConfig(), PlaybackConfigStub())  # type: ignore[arg-type]
+            calls: list[str] = []
+
+            async def fake_subprocess(output):
+                calls.append(f"subprocess:{output.name}")
+
+            async def fake_sounddevice(output):
+                calls.append(f"sounddevice:{output.name}")
+
+            engine._play_subprocess = fake_subprocess  # type: ignore[method-assign]
+            engine._play_sounddevice = fake_sounddevice  # type: ignore[method-assign]
+
+            await engine._play(Path("/tmp/out.wav"))
+
+            self.assertEqual(calls, ["subprocess:out.wav"])
+
+        asyncio.run(_runner())
 
     def test_parse_sink_input_volumes_extracts_channel_values(self):
         payload = [
@@ -208,6 +249,22 @@ class SpeechUnitTests(unittest.TestCase):
             [[SinkInputVolume(sink_input_id=9, volumes=[30])]],
         )
 
+    def test_parse_sink_input_volumes_excludes_listener_sounddevice_stream(self):
+        payload = [
+            {
+                "index": 47076,
+                "volume": {
+                    "mono": {"value": 22938},
+                },
+                "properties": {
+                    "application.name": "PipeWire ALSA [python3.12]",
+                    "media.name": "ALSA Playback",
+                },
+            }
+        ]
+
+        self.assertEqual(parse_sink_input_volumes(payload, exclude_speaker=True), [])
+
     def test_nested_ducking_restores_original_volume(self):
         class DuckerConfig:
             enabled = True
@@ -228,12 +285,20 @@ class SpeechUnitTests(unittest.TestCase):
                 self.assertEqual(args[1], "7")
                 state["volumes"] = [int(value) for value in args[2:]]
 
+            async def fake_normalize_listener_output():
+                return []
+
             ducking_module._ACTIVE_DUCKERS.clear()
             ducking_module._DUCKING_ACTIVE_SCALES.clear()
             ducking_module._DUCKING_ORIGINALS.clear()
             with (
                 patch.object(ducking_module, "_list_sink_inputs", fake_list_sink_inputs),
                 patch.object(ducking_module, "_run_pactl", fake_run_pactl),
+                patch.object(
+                    ducking_module,
+                    "normalize_active_listener_output_streams",
+                    fake_normalize_listener_output,
+                ),
             ):
                 first = PulseAudioDucker(DuckerConfig(0.6), exclude_speaker=False)
                 second = PulseAudioDucker(DuckerConfig(0.35), exclude_speaker=False)
@@ -285,6 +350,9 @@ class SpeechUnitTests(unittest.TestCase):
             async def fake_run_pw_metadata(*args):
                 metadata_calls.append(tuple(args))
 
+            async def fake_normalize_listener_output():
+                return []
+
             ducking_module._ACTIVE_DUCKERS.clear()
             ducking_module._DUCKING_ACTIVE_SCALES.clear()
             ducking_module._DUCKING_ORIGINALS.clear()
@@ -292,6 +360,11 @@ class SpeechUnitTests(unittest.TestCase):
                 patch.object(ducking_module, "_list_sink_inputs", fake_list_sink_inputs),
                 patch.object(ducking_module, "_run_pactl", fake_run_pactl),
                 patch.object(ducking_module, "_run_pw_metadata", fake_run_pw_metadata),
+                patch.object(
+                    ducking_module,
+                    "normalize_active_listener_output_streams",
+                    fake_normalize_listener_output,
+                ),
             ):
                 ducker = PulseAudioDucker(DuckerConfig(), exclude_speaker=False)
 
@@ -309,6 +382,156 @@ class SpeechUnitTests(unittest.TestCase):
             self.assertIn('"channels":["FL","FR"]', metadata_calls[-1][2])
 
         asyncio.run(_runner())
+
+    def test_restore_all_ducking_forces_original_volume_recovery(self):
+        class DuckerConfig:
+            enabled = True
+            fade_in_ms = 0
+            fade_out_ms = 0
+            volume_scale = 0.35
+
+        async def _runner():
+            state = {"volumes": [100]}
+
+            async def fake_list_sink_inputs(*, exclude_speaker=True):
+                return [SinkInputVolume(sink_input_id=7, volumes=list(state["volumes"]))]
+
+            async def fake_run_pactl(*args):
+                self.assertEqual(args[0], "set-sink-input-volume")
+                self.assertEqual(args[1], "7")
+                state["volumes"] = [int(value) for value in args[2:]]
+
+            async def fake_normalize_listener_output_state():
+                return {"route_keys": [], "stream_ids": []}
+
+            ducking_module._ACTIVE_DUCKERS.clear()
+            ducking_module._DUCKING_ACTIVE_SCALES.clear()
+            ducking_module._DUCKING_ORIGINALS.clear()
+            with (
+                patch.object(ducking_module, "_list_sink_inputs", fake_list_sink_inputs),
+                patch.object(ducking_module, "_run_pactl", fake_run_pactl),
+                patch.object(
+                    ducking_module,
+                    "normalize_listener_output_volume_state",
+                    fake_normalize_listener_output_state,
+                ),
+            ):
+                ducker = PulseAudioDucker(DuckerConfig(), exclude_speaker=False)
+
+                await ducker.duck()
+                self.assertEqual(state["volumes"], [35])
+                result = await restore_all_ducking()
+
+            self.assertEqual(state["volumes"], [100])
+            self.assertTrue(result["restored"])
+            self.assertEqual(result["restored_sink_input_ids"], [7])
+            self.assertEqual(ducking_module._DUCKING_ACTIVE_SCALES, {})
+            self.assertEqual(ducking_module._DUCKING_ORIGINALS, {})
+
+        asyncio.run(_runner())
+
+    def test_restore_all_ducking_recovers_persisted_baseline_after_memory_loss(self):
+        class DuckerConfig:
+            enabled = True
+            fade_in_ms = 0
+            fade_out_ms = 0
+            volume_scale = 0.5
+
+        async def _runner():
+            state = {"volumes": [100, 100]}
+            metadata_calls: list[tuple[str, ...]] = []
+
+            def current_item():
+                return SinkInputVolume(
+                    sink_input_id=7,
+                    volumes=list(state["volumes"]),
+                    channel_names=["front-left", "front-right"],
+                    application_name="Google Chrome",
+                    media_name="Playback",
+                )
+
+            async def fake_list_sink_inputs(*, exclude_speaker=True):
+                return [current_item()]
+
+            async def fake_run_pactl(*args):
+                self.assertEqual(args[0], "set-sink-input-volume")
+                self.assertEqual(args[1], "7")
+                state["volumes"] = [int(value) for value in args[2:]]
+
+            async def fake_run_pw_metadata(*args):
+                metadata_calls.append(tuple(args))
+
+            async def fake_normalize_listener_output_state():
+                return {"route_keys": [], "stream_ids": []}
+
+            ducking_module._ACTIVE_DUCKERS.clear()
+            ducking_module._DUCKING_ACTIVE_SCALES.clear()
+            ducking_module._DUCKING_ORIGINALS.clear()
+            with (
+                patch.object(ducking_module, "_list_sink_inputs", fake_list_sink_inputs),
+                patch.object(ducking_module, "_run_pactl", fake_run_pactl),
+                patch.object(ducking_module, "_run_pw_metadata", fake_run_pw_metadata),
+                patch.object(
+                    ducking_module,
+                    "normalize_listener_output_volume_state",
+                    fake_normalize_listener_output_state,
+                ),
+            ):
+                ducker = PulseAudioDucker(DuckerConfig(), exclude_speaker=False)
+                await ducker.duck()
+                self.assertEqual(state["volumes"], [50, 50])
+
+                ducking_module._ACTIVE_DUCKERS.clear()
+                ducking_module._DUCKING_ACTIVE_SCALES.clear()
+                ducking_module._DUCKING_ORIGINALS.clear()
+
+                result = await restore_all_ducking()
+
+            self.assertEqual(state["volumes"], [100, 100])
+            self.assertTrue(result["restored"])
+            self.assertEqual(result["persisted_baselines"], 1)
+            self.assertEqual(result["restored_sink_input_ids"], [7])
+            self.assertFalse(ducking_module._DUCKING_STATE_PATH.exists())
+            self.assertTrue(metadata_calls)
+
+        asyncio.run(_runner())
+
+    def test_normalize_active_listener_output_streams_sync_sets_listener_stream_to_full_volume(self):
+        payload = [
+            {
+                "index": 47076,
+                "volume": {
+                    "mono": {"value": 22938},
+                },
+                "properties": {
+                    "application.name": "PipeWire ALSA [python3.12]",
+                    "media.name": "ALSA Playback",
+                },
+            }
+        ]
+        pactl_calls: list[tuple[str, ...]] = []
+        metadata_calls: list[tuple[str, ...]] = []
+
+        with (
+            patch.object(ducking_module, "_list_raw_sink_inputs_sync", lambda: payload),
+            patch.object(ducking_module, "_run_pactl_sync", lambda *args: pactl_calls.append(tuple(args))),
+            patch.object(
+                ducking_module,
+                "_run_pw_metadata_sync",
+                lambda *args: metadata_calls.append(tuple(args)),
+            ),
+        ):
+            restored = ducking_module.normalize_active_listener_output_streams_sync(
+                retries=1,
+                delay_s=0.0,
+            )
+
+        self.assertEqual(restored, [47076])
+        self.assertEqual(
+            pactl_calls,
+            [("set-sink-input-volume", "47076", "65536")],
+        )
+        self.assertTrue(metadata_calls)
 
 
 if __name__ == "__main__":

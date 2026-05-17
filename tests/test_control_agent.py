@@ -56,6 +56,7 @@ class FakeSpeaker:
     def __init__(self) -> None:
         self.enabled = True
         self.calls: list[dict] = []
+        self.interrupt_calls: list[dict] = []
 
     def get_status(self) -> dict:
         return {
@@ -77,6 +78,10 @@ class FakeSpeaker:
             }
         )
         return self.get_status()
+
+    async def interrupt(self, *, reason="api", run_id=None) -> int:
+        self.interrupt_calls.append({"reason": reason, "run_id": run_id})
+        return 2
 
 
 def _save_control_cfg() -> tuple:
@@ -218,6 +223,73 @@ def test_control_agent_speaker_status_and_enabled_api():
             )
             assert status_code == 400
             assert data["error"] == "invalid_enabled"
+        finally:
+            await agent.close()
+            _restore_control_cfg(saved)
+
+    asyncio.run(_runner())
+
+
+def test_control_agent_speech_gate_reset_api(monkeypatch):
+    async def _runner() -> None:
+        saved = _save_control_cfg()
+        cfg.control.enabled = True
+        cfg.control.host = "127.0.0.1"
+        cfg.control.port = 0
+        cfg.control.token = None
+        cfg.control.max_ttl_seconds = 100.0
+        speech_gate = FakeSpeechGate()
+        speaker = FakeSpeaker()
+
+        async def _fake_restore_all_ducking() -> dict:
+            return {
+                "restored": True,
+                "active_duckers": 1,
+                "restored_sink_input_ids": [26404],
+                "missing_sink_input_ids": [],
+            }
+
+        monkeypatch.setattr(
+            "agents.control_agent.restore_all_ducking",
+            _fake_restore_all_ducking,
+        )
+        agent = ControlAgent(
+            speech_gate=speech_gate,  # type: ignore[arg-type]
+            speaker=speaker,
+        )
+        try:
+            await agent.start()
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/speech-gate/reset",
+                method="POST",
+                payload={
+                    "source": "test",
+                    "reason": "recover voice",
+                },
+            )
+            assert status_code == 200
+            assert data["ok"] is True
+            assert data["speech_gate"]["mode"] == "normal"
+            assert data["speaker"]["enabled"] is True
+            assert data["ducking"]["restored"] is True
+            assert data["dropped"] == 2
+            assert speech_gate.calls[-1] == {
+                "mode": "normal",
+                "ttl_seconds": None,
+                "source": "test",
+                "reason": "recover voice",
+            }
+            assert speaker.calls[-1] == {
+                "enabled": True,
+                "source": "test",
+                "reason": "recover voice",
+            }
+            assert speaker.interrupt_calls[-1] == {
+                "reason": "recover voice",
+                "run_id": None,
+            }
         finally:
             await agent.close()
             _restore_control_cfg(saved)

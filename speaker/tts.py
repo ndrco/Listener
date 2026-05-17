@@ -6,6 +6,8 @@ import hashlib
 import json
 import logging
 import re
+import shutil
+import sys
 import tempfile
 import unicodedata
 import wave
@@ -14,12 +16,7 @@ from typing import Protocol
 
 import numpy as np
 
-from audio.ducking import (
-    PulseAudioDucker,
-    SinkInputVolume,
-    build_ducking_steps,
-    parse_sink_input_volumes,
-)
+from audio.ducking import PulseAudioDucker
 
 try:  # pragma: no cover - availability is environment-dependent
     import sounddevice as sd
@@ -217,6 +214,9 @@ class PiperSpeechEngine:
 
     async def _play(self, output: Path) -> None:
         backend = str(getattr(self.playback, "backend", "auto") or "auto").strip().casefold()
+        if backend == "auto" and sys.platform.startswith("linux") and _playback_command_available(self.playback):
+            await self._play_subprocess(output)
+            return
         if backend in {"auto", "sounddevice"}:
             try:
                 await self._play_sounddevice(output)
@@ -269,7 +269,7 @@ def split_speech_units(text: str, *, include_incomplete: bool = True) -> list[st
     start = 0
     index = 0
     while index < len(value):
-        if value[index] in ".!?…":
+        if _is_sentence_terminal(value, index):
             end = index + 1
             while end < len(value) and value[end] in ".!?…\"')]}»”’":
                 end += 1
@@ -287,6 +287,19 @@ def split_speech_units(text: str, *, include_incomplete: bool = True) -> list[st
     if include_incomplete and _has_speakable_content(tail):
         units.append(tail)
     return units
+
+
+def _is_sentence_terminal(value: str, index: int) -> bool:
+    char = value[index]
+    if char in "!?…":
+        return True
+    if char != ".":
+        return False
+    previous_char = value[index - 1] if index > 0 else ""
+    next_char = value[index + 1] if index + 1 < len(value) else ""
+    if previous_char.isalnum() and next_char.isalnum():
+        return False
+    return True
 
 
 def split_complete_speech_units(text: str) -> list[str]:
@@ -315,6 +328,7 @@ def build_playback_args(config: PlaybackConfig, output: Path) -> list[str]:
         config.client_name,
         "--stream-name",
         config.stream_name,
+        "--volume=65536",
         "--property=application.id=speaker",
         "--property=state.restore-props=false",
         "--property=state.restore-target=false",
@@ -346,6 +360,14 @@ def _play_wav_sounddevice(output: Path) -> None:
 
 def _has_speakable_content(value: str) -> bool:
     return any(char.isalnum() or unicodedata.category(char).startswith("S") for char in value)
+
+
+def _playback_command_available(config: PlaybackConfig) -> bool:
+    command = str(getattr(config, "command", "") or "").strip()
+    if not command:
+        return False
+    path = Path(command)
+    return path.exists() or shutil.which(command) is not None
 
 
 def resolve_piper_command(command: str) -> list[str]:

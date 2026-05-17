@@ -113,6 +113,9 @@ def _patch_runtime(monkeypatch) -> FakeBus:
     FakeControlAgent.instances = []
     monkeypatch.setattr(main_module, "load", lambda: None)
     monkeypatch.setattr(main_module, "configure_logging", lambda *, debug, info: None)
+    async def _fake_restore_all_ducking():
+        return {"restored": False}
+    monkeypatch.setattr(main_module, "restore_all_ducking", _fake_restore_all_ducking)
     monkeypatch.setattr(main_module, "bus", fake_bus)
     monkeypatch.setattr(main_module, "indicators", FakeIndicators())
     monkeypatch.setattr(main_module, "AudioAgent", FakeAudioAgent)

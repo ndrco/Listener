@@ -43,6 +43,10 @@ scripts/listener-control standby --reason "standby requested"
 ```
 
 ```bash
+scripts/listener-control speech_gate_reset --reason "recover voice"
+```
+
+```bash
 scripts/listener-control speaker off --reason "disable spoken replies"
 ```
 
@@ -58,6 +62,7 @@ The helper delegates to `listenerctl.py`. Direct commands also work when `LISTEN
 - Quiet mode, name-only mode, stop listening to background speech, active listening off -> `mute`.
 - Do not listen, stop listening completely, standby mode, go deaf -> `standby`. If the user gives a duration you can use `--ttl`, for example `--ttl 600`.
 - Normal mode, come back, listen normally, leave active listening mode -> `normal`.
+- Recover stuck muted Listener voice / beep output after a bad interrupt or barge-in -> `speech_gate_reset`.
 - Disable spoken replies, turn voice output off, stop reading answers aloud, do not speak answers -> `speaker off`.
 - Enable spoken replies, turn voice output on, read answers aloud again -> `speaker on`.
 - If the user asks about spoken reply / voice output status, run `speaker status`.

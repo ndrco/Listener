@@ -17,6 +17,7 @@ def test_build_unit_text_rewrites_template_project_root(tmp_path):
             [
                 "WorkingDirectory=/home/re/src/Listener",
                 "ExecStart=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/main.py",
+                "ExecReload=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py speech_gate_reset --reason systemd-reload",
                 "ExecStop=-/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py stop --reason systemd",
                 "",
             ]
@@ -31,4 +32,6 @@ def test_build_unit_text_rewrites_template_project_root(tmp_path):
     assert f"WorkingDirectory={project_root.resolve()}" in unit_text
     assert f"{project_root.resolve()}/main.py" in unit_text
     assert f"{project_root.resolve()}/utils/listenerctl.py" in unit_text
+    assert "ExecReload=" in unit_text
+    assert "speech_gate_reset --reason systemd-reload" in unit_text
     assert "ExecStop=-" in unit_text

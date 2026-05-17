@@ -279,19 +279,79 @@ as the current project path.
 Listener auto-discovers OpenClaw's assistant name from workspace `IDENTITY.md`
 using `Name:` or `Имя:`. Full guide: [docs/openclaw.md](docs/openclaw.md).
 
-## Speaker Setup
+## Speaker And Emoji Output
 
 The integrated Speaker subscribes to OpenClaw Gateway chat events and voices
-assistant replies locally. It requires all of the following:
+assistant replies locally. It is intentionally independent from the input path:
+OpenClaw generates text, Listener receives the stream, splits it into speakable
+segments, synthesizes them with Piper, and plays them in order.
+
+On Linux the default playback path prefers `paplay` when it is available. That
+keeps the Speaker stream visible to PulseAudio/PipeWire with stable
+`application.id=speaker` metadata, which makes ducking and recovery more
+predictable. `sounddevice` remains available as an explicit backend, and old
+subprocess paths are kept as fallbacks.
+
+Speaker requires all of the following:
 
 - OpenClaw Gateway reachable at `speaker.gateway.url` (default `ws://127.0.0.1:18789`);
 - Python environment with `piper` available through `speaker.piper.command`;
 - a valid voice model at `speaker.piper.model`;
 - a playback command such as `/usr/bin/paplay`.
 
-Optionally, `speaker.emoji_display` can point to a separate
-`emoji-display` daemon. Listener strips emoji from text before Piper and sends
-the extracted symbols to that HTTP service; it does not open serial/COM ports.
+Typical config shape:
+
+```json
+{
+  "speaker": {
+    "enabled": true,
+    "tts_mode": "persistent",
+    "queue_size": 4,
+    "piper": {
+      "command": "/home/re/src/Listener/.venv/bin/python3",
+      "model": "/path/to/voice.onnx",
+      "volume": 1.0
+    },
+    "playback": {
+      "backend": "auto",
+      "command": "/usr/bin/paplay",
+      "ducking": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+When OpenClaw streams a long response, Listener queues sentence-sized segments.
+With `speaker.tts_mode="persistent"` the Piper worker stays warm and the next
+segment can be synthesized while the current one is still playing. Ducking is
+applied once for the active OpenClaw run and restored after the last queued
+segment, instead of fading out between sentences.
+
+Emoji are handled before text reaches Piper. Listener strips emoji from the
+spoken text, optionally sends the extracted symbols to a separate HTTP
+`emoji-display` daemon, and continues speaking even if that daemon is offline.
+Emoji-only segments can be displayed without creating empty TTS playback.
+
+```json
+{
+  "speaker": {
+    "emoji_display": {
+      "enabled": false,
+      "url": "http://127.0.0.1:18791",
+      "send": "all",
+      "mode": "replace",
+      "hold_ms": 2200,
+      "clear_on_interrupt": true
+    }
+  }
+}
+```
+
+`speaker.emoji_display.send` can be `all`, `first`, or `none`; `mode` can be
+`replace` or `queue`. Listener only talks to the HTTP service and does not open
+serial/COM ports itself.
 
 Quick checks:
 
@@ -320,6 +380,7 @@ When `main.py` is running, SpeechGate modes can be changed without restarting:
 .venv/bin/python utils/listenerctl.py chatty --ttl 600
 .venv/bin/python utils/listenerctl.py standby --ttl 300
 .venv/bin/python utils/listenerctl.py normal
+.venv/bin/python utils/listenerctl.py speech_gate_reset --reason "recover voice"
 .venv/bin/python utils/listenerctl.py speaker status
 .venv/bin/python utils/listenerctl.py speaker off
 .venv/bin/python utils/listenerctl.py speaker on
@@ -328,6 +389,13 @@ When `main.py` is running, SpeechGate modes can be changed without restarting:
 The status line includes mode, temporary/permanent state, expiry time, and
 restore mode.
 
+If a bad barge-in/interrupt incident leaves Listener's own voice or beeps
+ducked, run `speech_gate_reset`. It forces `speech_gate` back to `normal`,
+re-enables `speaker`, interrupts stuck playback, and restores any remembered
+PulseAudio/PipeWire sink-input volumes. On PipeWire it also normalizes the
+Speaker/Listener route settings stored by WirePlumber, which covers cases where
+the active playback stream already disappeared.
+
 HTTP examples:
 
 ```bash
@@ -335,6 +403,9 @@ curl -s http://127.0.0.1:18790/speech-gate/status | jq
 curl -s -X POST http://127.0.0.1:18790/speech-gate/mode \
   -H 'Content-Type: application/json' \
   -d '{"mode":"chatty","ttl_seconds":60,"source":"curl"}' | jq
+curl -s -X POST http://127.0.0.1:18790/speech-gate/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"curl","reason":"recover voice"}' | jq
 curl -s http://127.0.0.1:18790/speaker/status | jq
 ```
 
@@ -382,6 +453,23 @@ This is especially helpful when a final sentence is visible in OpenClaw but was
 not spoken: the log chain shows whether the tail was missing from gateway
 streaming, dropped from the queue, interrupted, or failed in Piper/playback.
 
+If other apps remain quiet after an interrupt, use the recovery endpoint:
+
+```bash
+.venv/bin/python utils/listenerctl.py speech_gate_reset --reason "recover ducking"
+```
+
+For a user service the same recovery path is exposed as reload:
+
+```bash
+systemctl --user reload listener.service
+```
+
+If Speaker itself sounds quiet, check `speaker.piper.volume` first. If the WAV
+is normal but the live stream is quiet, inspect PipeWire/PulseAudio stream
+volume and route settings; `speech_gate_reset` normalizes the Speaker stream to
+100% and restores remembered ducking baselines.
+
 ## Tests
 
 ```bash
@@ -397,6 +485,7 @@ Expected result: the full test suite passes.
 - [docs/audio.md](docs/audio.md) - audio processing, VAD and AEC.
 - [docs/stt.md](docs/stt.md) - Whisper STT and SpeechGate.
 - [docs/openclaw.md](docs/openclaw.md) - OpenClaw forwarding and control skill.
+- [docs/service.md](docs/service.md) - running Listener as a `systemd --user` service.
 - [docs/release.md](docs/release.md) - release checklist.
 
 ## License

@@ -107,6 +107,83 @@ def test_speech_playback_controller_interrupts_current_speech():
     asyncio.run(_runner())
 
 
+def test_speech_playback_controller_restores_ducking_when_interrupted_before_tts(
+    monkeypatch,
+):
+    async def _runner() -> None:
+        class RecordingSpeech:
+            def __init__(self) -> None:
+                self.spoken = []
+
+            async def speak(self, text: str) -> None:
+                self.spoken.append(text)
+
+        class SlowDucker:
+            def __init__(self, _config) -> None:
+                self.duck_started = asyncio.Event()
+                self.duck_continue = asyncio.Event()
+                self.restored = asyncio.Event()
+
+            async def duck(self) -> None:
+                self.duck_started.set()
+                await self.duck_continue.wait()
+
+            async def restore(self) -> None:
+                self.restored.set()
+
+        speech = RecordingSpeech()
+        ducker = SlowDucker(object())
+        monkeypatch.setattr(
+            "agents.speaker_agent.PulseAudioDucker",
+            lambda config: ducker,
+        )
+        controller = SpeechPlaybackController(
+            speech=speech,
+            queue_size=4,
+            enabled=True,
+            ducking_config=object(),
+        )
+        await controller.start()
+        try:
+            assert controller.enqueue(SpeechSegment("seg-1", "Hello.", "run-1"))
+            await asyncio.wait_for(ducker.duck_started.wait(), timeout=1.0)
+
+            dropped = await controller.interrupt(reason="barge_in")
+            ducker.duck_continue.set()
+            await asyncio.wait_for(ducker.restored.wait(), timeout=1.0)
+
+            assert dropped == 1
+            assert speech.spoken == []
+            assert controller.get_status()["current"] is None
+        finally:
+            await controller.close()
+
+    asyncio.run(_runner())
+
+
+def test_speech_playback_controller_drops_late_segments_for_interrupted_run():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            async def speak(self, text: str) -> None:
+                return None
+
+        controller = SpeechPlaybackController(
+            speech=RecordingSpeech(),
+            queue_size=4,
+            enabled=True,
+        )
+        try:
+            dropped = await controller.interrupt(reason="openclaw_aborted", run_id="run-1")
+
+            assert dropped == 0
+            assert controller.enqueue(SpeechSegment("seg-1", "Old.", "run-1")) is False
+            assert controller.enqueue(SpeechSegment("seg-2", "New.", "run-2")) is True
+        finally:
+            await controller.close()
+
+    asyncio.run(_runner())
+
+
 def test_speech_playback_controller_strips_and_forwards_emoji():
     async def _runner() -> None:
         class RecordingSpeech:

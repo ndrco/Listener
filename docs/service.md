@@ -74,6 +74,7 @@ manually, edit these fields in `~/.config/systemd/user/listener.service`:
 
 - `WorkingDirectory`
 - `ExecStart`
+- `ExecReload`
 - `ExecStop`
 
 ## Run
@@ -106,6 +107,8 @@ Listener writes to stdout/stderr, and journald handles collection and rotation.
 ## Stop and Restart
 
 ```bash
+.venv/bin/python utils/listenerctl.py speech_gate_reset --reason manual
+systemctl --user reload listener.service
 .venv/bin/python utils/listenerctl.py stop --reason manual
 systemctl --user restart listener.service
 systemctl --user stop listener.service
@@ -115,6 +118,15 @@ The systemd unit uses `listenerctl stop` for graceful shutdown. The `ExecStop`
 command is best-effort, so the unit does not fail if Listener already stopped
 itself through `/shutdown`. If the process does not exit within
 `TimeoutStopSec`, systemd will terminate it.
+
+`systemctl --user reload listener.service` is wired to Listener's soft recovery
+path. It runs `listenerctl.py speech_gate_reset --reason systemd-reload`,
+which returns `speech_gate` to `normal`, re-enables `speaker`, interrupts
+stuck reply playback, and forces ducking volumes to restore without restarting
+the Python process. On PipeWire/WirePlumber systems it also restores persisted
+ducking baselines from `state/ducking_state.json` and normalizes the
+Speaker/Listener output route settings, so reload is the first recovery command
+to try after a bad barge-in or interrupted long OpenClaw response.
 
 ## Strict Startup
 

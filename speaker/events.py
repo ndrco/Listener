@@ -27,6 +27,7 @@ class SpeechRouteResult:
 class _RunSpeechState:
     last_text: str = ""
     emitted_text: str = ""
+    emitted_chars: int = 0
     seq: int = 0
     fallback_final_only: bool = False
     unsafe_after_partial: bool = False
@@ -79,7 +80,7 @@ class ChatSpeechRouter:
         if state.fallback_final_only:
             state.last_text = extracted.text
             return []
-        if state.emitted_text and not extracted.text.startswith(state.emitted_text):
+        if not _matches_emitted_prefix(extracted.text, state):
             state.fallback_final_only = True
             state.unsafe_after_partial = True
             state.last_text = extracted.text
@@ -125,11 +126,12 @@ class ChatSpeechRouter:
         return SpeechRouteResult(segments)
 
     def _emit_available(self, run_id: str, state: _RunSpeechState, *, final: bool) -> list[SpeechSegment]:
-        if state.emitted_text and not state.last_text.startswith(state.emitted_text):
+        if not _matches_emitted_prefix(state.last_text, state):
             state.fallback_final_only = True
             return []
 
-        new_text = state.last_text[len(state.emitted_text) :].strip()
+        cursor = _skip_whitespace(state.last_text, state.emitted_chars)
+        new_text = state.last_text[cursor:].strip()
         if not new_text:
             return []
 
@@ -146,9 +148,12 @@ class ChatSpeechRouter:
             return []
 
         segments: list[SpeechSegment] = []
+        cursor = _skip_whitespace(state.last_text, state.emitted_chars)
         for unit in units:
             state.seq += 1
-            state.emitted_text = _append_text(state.emitted_text, unit)
+            cursor = _advance_cursor(state.last_text, cursor, unit)
+            state.emitted_chars = cursor
+            state.emitted_text = state.last_text[:cursor].strip()
             segments.append(
                 SpeechSegment(
                     identifier=_segment_identifier(run_id, state.seq, unit),
@@ -168,12 +173,11 @@ def _extract_payload_message(payload: dict[str, Any], run_id: str):
 
 
 def _forced_incomplete_chunk(text: str, complete_units: list[str], config: StreamingConfig) -> str | None:
+    cursor = 0
     if complete_units:
-        emitted = ""
         for unit in complete_units:
-            emitted = _append_text(emitted, unit)
-        if text.startswith(emitted):
-            text = text[len(emitted) :].strip()
+            cursor = _advance_cursor(text, cursor, unit)
+        text = text[cursor:].strip()
     if len(text) < config.max_chars:
         return None
     cut = text.rfind(" ", 0, config.max_chars + 1)
@@ -185,13 +189,27 @@ def _forced_incomplete_chunk(text: str, complete_units: list[str], config: Strea
     return chunk
 
 
-def _append_text(base: str, addition: str) -> str:
-    addition = addition.strip()
-    if not addition:
-        return base
-    if not base:
-        return addition
-    return f"{base} {addition}"
+def _matches_emitted_prefix(text: str, state: _RunSpeechState) -> bool:
+    if state.emitted_chars <= 0:
+        return True
+    if len(text) < state.emitted_chars:
+        return False
+    return text[: state.emitted_chars].strip() == state.emitted_text
+
+
+def _skip_whitespace(text: str, cursor: int) -> int:
+    cursor = max(0, min(len(text), cursor))
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    return cursor
+
+
+def _advance_cursor(text: str, cursor: int, unit: str) -> int:
+    cursor = _skip_whitespace(text, cursor)
+    position = text.find(unit, cursor)
+    if position < 0:
+        return min(len(text), cursor + len(unit))
+    return position + len(unit)
 
 
 def _segment_identifier(run_id: str, seq: int, text: str) -> str:

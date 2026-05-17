@@ -10,6 +10,7 @@ from agents.control_agent import ControlAgent
 from agents.openclaw_input_agent import OpenClawInputAgent
 from agents.speaker_agent import SpeakerAgent
 from agents.speech_gate_agent import SpeechGateAgent
+from audio.ducking import restore_all_ducking
 from core.bus import bus
 from core.config import cfg, load
 from core.logging_utils import configure_logging
@@ -65,6 +66,13 @@ async def main() -> None:
         logging.info("Listener voice runtime starting in DEBUG mode")
     elif cfg.info:
         logging.info("Listener voice runtime starting")
+
+    try:
+        ducking_recovery = await restore_all_ducking()
+        if ducking_recovery.get("restored"):
+            logging.info("main: restored stale ducking state on startup: %s", ducking_recovery)
+    except Exception:
+        logging.exception("main: failed to restore stale ducking state on startup")
 
     status = RuntimeStatus()
     stop = asyncio.Event()

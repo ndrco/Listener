@@ -23,6 +23,12 @@ def add_set_mode_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="Print raw JSON response.")
 
 
+def add_reason_source_json_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--reason", default="", help="Human-readable reason.")
+    parser.add_argument("--source", default="listenerctl", help="Change source label.")
+    parser.add_argument("--json", action="store_true", help="Print raw JSON response.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Control a running Listener process.")
     parser.add_argument(
@@ -47,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     set_mode.add_argument("mode", choices=SPEECH_GATE_MODES)
     add_set_mode_options(set_mode)
 
+    reset = speech_gate_subparsers.add_parser(
+        "reset",
+        help="Recover normal speech gate mode, speaker output, and ducking state.",
+    )
+    add_reason_source_json_options(reset)
+
     status_alias = subparsers.add_parser("status", help="Shortcut for: speech-gate status.")
     status_alias.add_argument("--json", action="store_true", help="Print raw JSON response.")
     status_alias.set_defaults(resource="speech-gate", action="status")
@@ -59,6 +71,20 @@ def build_parser() -> argparse.ArgumentParser:
         add_set_mode_options(mode_alias)
         mode_alias.set_defaults(resource="speech-gate", action="set-mode", mode=mode)
 
+    reset_alias = subparsers.add_parser(
+        "speech-gate-reset",
+        help="Shortcut for: speech-gate reset.",
+    )
+    add_reason_source_json_options(reset_alias)
+    reset_alias.set_defaults(resource="speech-gate", action="reset")
+
+    reset_alias_underscore = subparsers.add_parser(
+        "speech_gate_reset",
+        help="Shortcut for: speech-gate reset.",
+    )
+    add_reason_source_json_options(reset_alias_underscore)
+    reset_alias_underscore.set_defaults(resource="speech-gate", action="reset")
+
     speaker = subparsers.add_parser("speaker", help="Control integrated Speaker playback.")
     speaker_subparsers = speaker.add_subparsers(dest="action", required=True)
 
@@ -67,9 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     for action, enabled in (("on", True), ("off", False)):
         speaker_mode = speaker_subparsers.add_parser(action, help=f"Turn Speaker {action}.")
-        speaker_mode.add_argument("--reason", default="", help="Human-readable reason.")
-        speaker_mode.add_argument("--source", default="listenerctl", help="Change source label.")
-        speaker_mode.add_argument("--json", action="store_true", help="Print raw JSON response.")
+        add_reason_source_json_options(speaker_mode)
         speaker_mode.set_defaults(enabled=enabled)
 
     voice_status = subparsers.add_parser("voice-status", help="Shortcut for: speaker status.")
@@ -78,9 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     for alias, enabled in (("voice-on", True), ("voice-off", False)):
         voice_alias = subparsers.add_parser(alias, help=f"Shortcut for: speaker {'on' if enabled else 'off'}.")
-        voice_alias.add_argument("--reason", default="", help="Human-readable reason.")
-        voice_alias.add_argument("--source", default="listenerctl", help="Change source label.")
-        voice_alias.add_argument("--json", action="store_true", help="Print raw JSON response.")
+        add_reason_source_json_options(voice_alias)
         voice_alias.set_defaults(resource="speaker", action="enabled", enabled=enabled)
 
     health = subparsers.add_parser("health", help="Check Listener control API liveness.")
@@ -220,6 +242,31 @@ def format_ready_status(data: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def format_speech_gate_reset_status(data: dict[str, Any]) -> str:
+    parts = ["speech_gate_reset=ok"]
+    speech_gate = data.get("speech_gate")
+    if isinstance(speech_gate, dict):
+        parts.append(f"mode={speech_gate.get('mode', 'unknown')}")
+    speaker = data.get("speaker")
+    if isinstance(speaker, dict):
+        parts.append(f"speaker={'on' if bool(speaker.get('enabled')) else 'off'}")
+    ducking = data.get("ducking")
+    if isinstance(ducking, dict):
+        restored_ids = ducking.get("restored_sink_input_ids")
+        missing_ids = ducking.get("missing_sink_input_ids")
+        route_keys = ducking.get("listener_route_keys")
+        if isinstance(restored_ids, list):
+            parts.append(f"restored={len(restored_ids)}")
+        if isinstance(route_keys, list) and route_keys:
+            parts.append(f"routes={len(route_keys)}")
+        if isinstance(missing_ids, list) and missing_ids:
+            parts.append(f"missing={len(missing_ids)}")
+    dropped = data.get("dropped")
+    if dropped not in (None, ""):
+        parts.append(f"dropped={dropped}")
+    return " ".join(parts)
+
+
 def _format_seconds(value: Any) -> str:
     try:
         return f"{float(value):.1f}s"
@@ -284,6 +331,16 @@ def _print_service_response(data: dict[str, Any], *, raw_json: bool, ready: bool
     print("listener healthy")
 
 
+def _print_reset_response(data: dict[str, Any], *, raw_json: bool) -> None:
+    if raw_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    if not data.get("ok"):
+        print(f"error: {data.get('error', 'unknown_error')}", file=sys.stderr)
+        return
+    print(format_speech_gate_reset_status(data))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -303,6 +360,20 @@ def main(argv: list[str] | None = None) -> int:
             payload=payload,
         )
         _print_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "speech-gate" and args.action == "reset":
+        status, data = request_json(
+            args.url,
+            "/speech-gate/reset",
+            method="POST",
+            token=args.token,
+            payload={
+                "source": args.source,
+                "reason": args.reason or "speech_gate_reset",
+            },
+        )
+        _print_reset_response(data, raw_json=args.json)
         return 0 if 200 <= status < 300 and data.get("ok") else 1
 
     if args.resource == "speaker" and args.action == "status":

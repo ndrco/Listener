@@ -119,6 +119,35 @@ class ChatSpeechRouterTests(unittest.TestCase):
         self.assertEqual([segment.text for segment in second.segments], ["Первый пункт готов."])
         self.assertEqual([segment.text for segment in third.segments], ["Второй пункт готов."])
 
+    def test_file_extension_periods_do_not_stall_streaming(self):
+        router = ChatSpeechRouter(GatewayConfig(), StreamingConfig())
+        header = "Твои основные задачи (из MEMORY.md и AGENTS.md):"
+
+        first = router.route(chat_event("delta", header))
+        second = router.route(
+            chat_event(
+                "delta",
+                f"{header} Ты занимаешься настройкой и управлением OpenClaw.",
+            )
+        )
+        third = router.route(
+            chat_event(
+                "delta",
+                f"{header} Ты занимаешься настройкой и управлением OpenClaw. "
+                "Возможно, работаешь с кодом.",
+            )
+        )
+
+        self.assertEqual(first.segments, [])
+        self.assertEqual(
+            [segment.text for segment in second.segments],
+            [f"{header} Ты занимаешься настройкой и управлением OpenClaw."],
+        )
+        self.assertEqual(
+            [segment.text for segment in third.segments],
+            ["Возможно, работаешь с кодом."],
+        )
+
     def test_final_without_message_requests_history_fallback(self):
         router = ChatSpeechRouter(GatewayConfig(), StreamingConfig())
 
