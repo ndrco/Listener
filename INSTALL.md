@@ -229,6 +229,10 @@ For the full service workflow, including start-on-login, restart, uninstall,
 custom checkout paths, and strict startup mode, see
 [docs/service.md](docs/service.md).
 
+Runtime mode changes are saved in `state/runtime_state.json` on the installed
+machine. Fresh releases do not include this file, so a new installation starts
+from `config/config.json`.
+
 ## 7. OpenClaw Integration
 
 Listener sends accepted phrases to OpenClaw through:

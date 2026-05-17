@@ -129,6 +129,10 @@ service startup fail when a critical component cannot start, enable this in
 Critical components are audio input, SpeechGate, OpenClaw input forwarding, and
 Speaker when `speaker.enabled=true`.
 
+Runtime mode changes are stored locally in `state/runtime_state.json`. That file
+is created by Listener on the installed machine and is intentionally not shipped
+in releases.
+
 Recommended rollout:
 
 ```bash
