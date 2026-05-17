@@ -226,7 +226,7 @@ class OpenClawGatewayRpcClient:
                 "minProtocol": _PROTOCOL_VERSION,
                 "maxProtocol": _PROTOCOL_VERSION,
                 "client": {
-                    "id": "listener-input",
+                    "id": "gateway-client",
                     "displayName": "Listener",
                     "version": "runtime",
                     "platform": "python",

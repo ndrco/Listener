@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 
 
 from agents.openclaw_gateway import (  # noqa: E402
+    OpenClawGatewayRpcClient,
     abort_openclaw_chat_session,
     clear_openclaw_chat_run,
     get_openclaw_chat_run,
@@ -19,6 +20,35 @@ from agents.openclaw_gateway import (  # noqa: E402
 from agents.openclaw_input_agent import OpenClawInputAgent  # noqa: E402
 from core.bus import Event  # noqa: E402
 from core.config import cfg  # noqa: E402
+
+
+def test_gateway_rpc_client_uses_openclaw_allowed_client_id():
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(payload)
+
+        async def recv(self) -> str:
+            import json
+
+            request = json.loads(self.sent[-1])
+            return json.dumps({"type": "res", "id": request["id"], "ok": True, "payload": {}})
+
+    async def _runner() -> None:
+        import json
+
+        ws = FakeWebSocket()
+        client = OpenClawGatewayRpcClient(url="ws://127.0.0.1:18789")
+        client._ws = ws  # pylint: disable=protected-access
+
+        await client._send_connect(timeout_s=1.0)  # pylint: disable=protected-access
+
+        frame = json.loads(ws.sent[0])
+        assert frame["params"]["client"]["id"] == "gateway-client"
+
+    asyncio.run(_runner())
 
 
 def test_abort_openclaw_chat_session_uses_remembered_run_id_first(monkeypatch):
