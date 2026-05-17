@@ -16,6 +16,48 @@ from core.logging_utils import configure_logging
 from core.sound_indicators import indicators
 
 
+class RuntimeStatus:
+    """Small status snapshot for service readiness probes."""
+
+    def __init__(self) -> None:
+        self._components: dict[str, dict] = {}
+
+    def set(
+        self,
+        name: str,
+        state: str,
+        *,
+        critical: bool = False,
+        error: str | None = None,
+    ) -> None:
+        self._components[name] = {
+            "state": state,
+            "ok": state in {"started", "disabled"},
+            "critical": bool(critical),
+            "error": error,
+        }
+
+    def as_dict(self) -> dict:
+        components = {name: dict(value) for name, value in self._components.items()}
+        ready = all(
+            bool(component.get("ok"))
+            for component in components.values()
+            if component.get("critical")
+        )
+        last_error = None
+        for component in reversed(list(components.values())):
+            if component.get("error"):
+                last_error = component["error"]
+                break
+        return {
+            "ok": True,
+            "service": "listener",
+            "ready": ready,
+            "components": components,
+            "last_error": last_error,
+        }
+
+
 async def main() -> None:
     load()
     configure_logging(debug=cfg.debug, info=cfg.info)
@@ -24,11 +66,32 @@ async def main() -> None:
     elif cfg.info:
         logging.info("Listener voice runtime starting")
 
+    status = RuntimeStatus()
+    stop = asyncio.Event()
+
+    async def _request_shutdown(reason: str = "api") -> None:
+        await bus.publish(
+            cfg.events.app.stop,
+            source="control",
+            reason=str(reason or "api"),
+        )
+
+    async def _on_app_stop(ev) -> None:
+        logging.info(
+            "main: got app/stop from %s (%s)",
+            ev.payload.get("source"),
+            ev.payload.get("reason"),
+        )
+        stop.set()
+
     bus.start()
+    bus.subscribe(cfg.events.app.stop, _on_app_stop)
 
     try:
         await indicators.start()
+        status.set("indicators", "started")
     except Exception:
+        status.set("indicators", "failed", error="failed to start sound indicators")
         logging.exception("main: failed to start sound indicators")
 
     audio: Optional[AudioAgent] = None
@@ -41,14 +104,25 @@ async def main() -> None:
         audio = AudioAgent()
         try:
             await audio.start()
+            status.set("audio", "started", critical=True)
         except Exception:
+            status.set("audio", "failed", critical=True, error="failed to start AudioAgent")
             logging.exception("main: failed to start AudioAgent")
             audio = None
+    else:
+        status.set("audio", "disabled", critical=True)
 
     speaker = SpeakerAgent()
     try:
         await speaker.start()
+        status.set("speaker", "started", critical=bool(cfg.speaker.enabled))
     except Exception:
+        status.set(
+            "speaker",
+            "failed",
+            critical=bool(cfg.speaker.enabled),
+            error="failed to start SpeakerAgent",
+        )
         logging.exception("main: failed to start SpeakerAgent")
         speaker = None
 
@@ -74,35 +148,52 @@ async def main() -> None:
     )
     try:
         await speech_gate.start()
+        status.set("speech_gate", "started", critical=True)
     except Exception:
+        status.set(
+            "speech_gate",
+            "failed",
+            critical=True,
+            error="failed to start SpeechGateAgent",
+        )
         logging.exception("main: failed to start SpeechGateAgent")
         speech_gate = None
 
     if speech_gate is not None:
-        control = ControlAgent(speech_gate=speech_gate, speaker=speaker)
+        control = ControlAgent(
+            speech_gate=speech_gate,
+            speaker=speaker,
+            status_provider=status.as_dict,
+            shutdown_handler=_request_shutdown,
+        )
         try:
             await control.start()
+            status.set("control", "started")
         except Exception:
+            status.set("control", "failed", error="failed to start ControlAgent")
             logging.exception("main: failed to start ControlAgent")
             control = None
+    else:
+        status.set("control", "disabled")
 
     try:
         await openclaw_input.start()
+        status.set("openclaw_input", "started", critical=True)
     except Exception:
+        status.set(
+            "openclaw_input",
+            "failed",
+            critical=True,
+            error="failed to start OpenClawInputAgent",
+        )
         logging.exception("main: failed to start OpenClawInputAgent")
         openclaw_input = None
 
-    stop = asyncio.Event()
-
-    async def _on_app_stop(ev) -> None:
-        logging.info(
-            "main: got app/stop from %s (%s)",
-            ev.payload.get("source"),
-            ev.payload.get("reason"),
-        )
+    startup_error: RuntimeError | None = None
+    if bool(getattr(cfg.service, "strict_startup", False)) and not status.as_dict()["ready"]:
+        startup_error = RuntimeError(f"strict startup failed: {status.as_dict()['last_error']}")
+        logging.error("main: %s", startup_error)
         stop.set()
-
-    bus.subscribe(cfg.events.app.stop, _on_app_stop)
 
     key_task: Optional[asyncio.Task] = None
     if sys.platform.startswith("win"):
@@ -192,6 +283,8 @@ async def main() -> None:
 
         if cfg.debug or cfg.info:
             logging.info("Listener voice runtime shutdown complete")
+        if startup_error is not None:
+            raise startup_error
 
 
 if __name__ == "__main__":

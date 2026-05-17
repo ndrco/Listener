@@ -7,7 +7,7 @@ import contextlib
 import ipaddress
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from agents.speech_gate_agent import SpeechGateAgent
@@ -24,9 +24,13 @@ class ControlAgent:
         *,
         speech_gate: SpeechGateAgent | None = None,
         speaker: Any | None = None,
+        status_provider: Callable[[], dict[str, Any]] | None = None,
+        shutdown_handler: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> None:
         self._speech_gate = speech_gate
         self._speaker = speaker
+        self._status_provider = status_provider
+        self._shutdown_handler = shutdown_handler
         self._server: asyncio.AbstractServer | None = None
         self._host = ""
         self._port = 0
@@ -110,6 +114,10 @@ class ControlAgent:
                 await self._handle_root(writer)
             elif method == "GET" and path == "/health":
                 await self._send_json(writer, 200, {"ok": True, "service": "listener-control"})
+            elif method == "GET" and path == "/ready":
+                await self._handle_ready(writer)
+            elif method == "POST" and path == "/shutdown":
+                await self._handle_shutdown(writer, body)
             elif method == "GET" and path == "/speech-gate/status":
                 await self._handle_status(writer)
             elif method == "POST" and path == "/speech-gate/mode":
@@ -138,6 +146,8 @@ class ControlAgent:
                 "service": "listener-control",
                 "endpoints": {
                     "health": "GET /health",
+                    "ready": "GET /ready",
+                    "shutdown": "POST /shutdown",
                     "speech_gate_status": "GET /speech-gate/status",
                     "speech_gate_mode": "POST /speech-gate/mode",
                     "speaker_status": "GET /speaker/status",
@@ -145,6 +155,59 @@ class ControlAgent:
                 },
             },
         )
+
+    async def _handle_ready(self, writer: asyncio.StreamWriter) -> None:
+        if self._status_provider is None:
+            await self._send_json(
+                writer,
+                200,
+                {
+                    "ok": True,
+                    "ready": True,
+                    "components": {},
+                    "last_error": None,
+                },
+            )
+            return
+        try:
+            payload = dict(self._status_provider() or {})
+        except Exception:
+            log.exception("ControlAgent: status provider failed")
+            await self._send_json(
+                writer,
+                500,
+                {"ok": False, "ready": False, "error": "status_provider_failed"},
+            )
+            return
+        payload["ok"] = bool(payload.get("ok", True))
+        payload["ready"] = bool(payload.get("ready", False))
+        payload.setdefault("components", {})
+        payload.setdefault("last_error", None)
+        await self._send_json(writer, 200 if payload["ready"] else 503, payload)
+
+    async def _handle_shutdown(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        reason = "api"
+        if body:
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError:
+                await self._send_json(writer, 400, {"ok": False, "error": "invalid_json"})
+                return
+            if not isinstance(payload, dict):
+                await self._send_json(writer, 400, {"ok": False, "error": "invalid_payload"})
+                return
+            reason = str(payload.get("reason") or reason)
+        if self._shutdown_handler is None:
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "shutdown_unavailable"},
+            )
+            return
+        maybe_result = self._shutdown_handler(reason)
+        if asyncio.iscoroutine(maybe_result):
+            await maybe_result
+        await self._send_json(writer, 200, {"ok": True, "stopping": True})
 
     async def _handle_status(self, writer: asyncio.StreamWriter) -> None:
         if self._speech_gate is None:

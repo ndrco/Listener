@@ -15,6 +15,9 @@
     "max_ttl_seconds": 86400,
     "state_path": "state/runtime_state.json"
   },
+  "service": {
+    "strict_startup": false
+  },
   "openclaw": {
     "enabled": true,
     "command": "openclaw",

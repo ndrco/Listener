@@ -192,7 +192,44 @@ Check Speaker runtime state:
 .venv/bin/python utils/listenerctl.py speaker status
 ```
 
-## 6. OpenClaw Integration
+## 6. Install As A Service
+
+Run Listener manually once before installing it as a service. This makes audio
+device, model, and OpenClaw configuration errors much easier to see directly in
+the terminal.
+
+After the manual smoke test works, install a Linux `systemd --user` service for
+the current checkout:
+
+```bash
+.venv/bin/python utils/install_user_service.py
+systemctl --user start listener.service
+```
+
+Check liveness and readiness:
+
+```bash
+.venv/bin/python utils/listenerctl.py health
+.venv/bin/python utils/listenerctl.py ready
+```
+
+Follow logs:
+
+```bash
+journalctl --user -u listener.service -f
+```
+
+Gracefully stop the running service:
+
+```bash
+.venv/bin/python utils/listenerctl.py stop --reason manual
+```
+
+For the full service workflow, including start-on-login, restart, uninstall,
+custom checkout paths, and strict startup mode, see
+[docs/service.md](docs/service.md).
+
+## 7. OpenClaw Integration
 
 Listener sends accepted phrases to OpenClaw through:
 
@@ -274,7 +311,7 @@ Spoken replies also depend on OpenClaw Gateway chat events. A healthy state is:
 - `listenerctl speaker status` shows `agent=running gateway=connected`;
 - no `error=...` field in the status output.
 
-## 7. Tests
+## 8. Tests
 
 ```bash
 . .venv/bin/activate

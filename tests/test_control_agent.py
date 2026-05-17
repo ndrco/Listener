@@ -225,6 +225,112 @@ def test_control_agent_speaker_status_and_enabled_api():
     asyncio.run(_runner())
 
 
+def test_control_agent_health_ready_and_shutdown_api():
+    async def _runner() -> None:
+        saved = _save_control_cfg()
+        cfg.control.enabled = True
+        cfg.control.host = "127.0.0.1"
+        cfg.control.port = 0
+        cfg.control.token = None
+        shutdown_reasons: list[str] = []
+
+        async def _shutdown(reason: str) -> None:
+            shutdown_reasons.append(reason)
+
+        agent = ControlAgent(
+            speech_gate=FakeSpeechGate(),  # type: ignore[arg-type]
+            status_provider=lambda: {
+                "ok": True,
+                "ready": True,
+                "components": {
+                    "audio": {
+                        "state": "started",
+                        "ok": True,
+                        "critical": True,
+                        "error": None,
+                    }
+                },
+                "last_error": None,
+            },
+            shutdown_handler=_shutdown,
+        )
+        try:
+            await agent.start()
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/health",
+            )
+            assert status_code == 200
+            assert data["ok"] is True
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/ready",
+            )
+            assert status_code == 200
+            assert data["ready"] is True
+            assert data["components"]["audio"]["state"] == "started"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/shutdown",
+                method="POST",
+                payload={"reason": "test"},
+            )
+            assert status_code == 200
+            assert data == {"ok": True, "stopping": True}
+            assert shutdown_reasons == ["test"]
+        finally:
+            await agent.close()
+            _restore_control_cfg(saved)
+
+    asyncio.run(_runner())
+
+
+def test_control_agent_ready_reports_not_ready_as_503():
+    async def _runner() -> None:
+        saved = _save_control_cfg()
+        cfg.control.enabled = True
+        cfg.control.host = "127.0.0.1"
+        cfg.control.port = 0
+        cfg.control.token = None
+        agent = ControlAgent(
+            speech_gate=FakeSpeechGate(),  # type: ignore[arg-type]
+            status_provider=lambda: {
+                "ok": True,
+                "ready": False,
+                "components": {
+                    "audio": {
+                        "state": "failed",
+                        "ok": False,
+                        "critical": True,
+                        "error": "boom",
+                    }
+                },
+                "last_error": "boom",
+            },
+        )
+        try:
+            await agent.start()
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/ready",
+            )
+            assert status_code == 503
+            assert data["ok"] is True
+            assert data["ready"] is False
+            assert data["last_error"] == "boom"
+        finally:
+            await agent.close()
+            _restore_control_cfg(saved)
+
+    asyncio.run(_runner())
+
+
 def test_control_agent_rejects_non_loopback_without_token():
     async def _runner() -> None:
         saved = _save_control_cfg()
@@ -258,6 +364,24 @@ def test_control_agent_requires_token_when_configured():
                 request_json,
                 agent.base_url,
                 "/speech-gate/status",
+            )
+            assert status_code == 401
+            assert data["error"] == "unauthorized"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/ready",
+            )
+            assert status_code == 401
+            assert data["error"] == "unauthorized"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/shutdown",
+                method="POST",
+                payload={"reason": "test"},
             )
             assert status_code == 401
             assert data["error"] == "unauthorized"

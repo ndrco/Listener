@@ -68,6 +68,21 @@ curl -s http://127.0.0.1:18790/ | jq
 .venv/bin/python utils/listenerctl.py status
 ```
 
+## Run As A Service
+
+Linux users should run Listener as a `systemd --user` service after the first
+manual smoke test succeeds:
+
+```bash
+.venv/bin/python utils/install_user_service.py --start
+.venv/bin/python utils/listenerctl.py ready
+journalctl --user -u listener.service -f
+```
+
+The installer writes a unit for the current checkout path. See
+[docs/service.md](docs/service.md) for installation, readiness checks, logs,
+restart, uninstall, and strict-startup behavior.
+
 ## Configuration
 
 Main runtime settings live in `config/config.json`.

@@ -161,6 +161,13 @@ class ControlCfg:
 
 
 @dataclass
+class ServiceCfg:
+    """Service/supervisor integration settings."""
+
+    strict_startup: bool = False
+
+
+@dataclass
 class AudioInputCfg:
     """Input audio stream settings."""
     input_sample_rate: int = 16000
@@ -397,6 +404,7 @@ class Config:
         self.openclaw = OpenClawInputCfg()
         self.indicators = SoundIndicatorsCfg()
         self.control = ControlCfg()
+        self.service = ServiceCfg()
         self.events = EventsCfg()
         self.speech_gate = SpeechGateCfg()
         self.audio = AudioCfg()
@@ -646,6 +654,15 @@ def load(path: str | None = None) -> None:
             if "state_path" in control_section:
                 state_path = _resolve_project_path(control_section.get("state_path"), root)
                 control_cfg.state_path = state_path
+
+        # service integration
+        service_section = _as_dict(data.get("service"))
+        if service_section:
+            service_cfg = cfg.service
+            if "strict_startup" in service_section:
+                service_cfg.strict_startup = bool(
+                    service_section.get("strict_startup", service_cfg.strict_startup)
+                )
 
         # speech gate
         speech_gate_section = _as_dict(data.get("speech_gate"))

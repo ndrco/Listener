@@ -1,0 +1,18 @@
+[Unit]
+Description=Listener voice runtime
+After=default.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/re/src/Listener
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/main.py
+ExecStop=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py stop --reason systemd
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

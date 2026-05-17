@@ -42,6 +42,9 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
                     "max_ttl_seconds": 123.0,
                     "state_path": "state/runtime_state.json",
                 },
+                "service": {
+                    "strict_startup": True,
+                },
                 "speech_gate": {
                     "patterns_file": "config/speech_gate_patterns.json",
                     "identity_file": ".openclaw/workspace/IDENTITY.md",
@@ -95,6 +98,7 @@ def test_load_resolves_project_relative_runtime_paths(monkeypatch, tmp_path):
         assert cfg.control.token is None
         assert cfg.control.max_ttl_seconds == 123.0
         assert cfg.control.state_path == str((project_root / "state" / "runtime_state.json").resolve())
+        assert cfg.service.strict_startup is True
     finally:
         cfg.paths = real_paths
         load(str(ROOT / "config" / "config.json"))

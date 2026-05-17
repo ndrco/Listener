@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 from utils.listenerctl import (  # noqa: E402
     build_parser,
     build_set_mode_payload,
+    format_ready_status,
     format_speaker_status,
     format_speech_gate_status,
 )
@@ -100,6 +101,22 @@ def test_listenerctl_speaker_commands_parse():
     assert alias.source == "openclaw"
 
 
+def test_listenerctl_service_commands_parse():
+    parser = build_parser()
+    health = parser.parse_args(["health", "--json"])
+    ready = parser.parse_args(["ready"])
+    stop = parser.parse_args(["stop", "--reason", "systemd"])
+
+    assert health.resource == "service"
+    assert health.action == "health"
+    assert health.json is True
+    assert ready.resource == "service"
+    assert ready.action == "ready"
+    assert stop.resource == "service"
+    assert stop.action == "stop"
+    assert stop.reason == "systemd"
+
+
 def test_listenerctl_formats_permanent_status():
     assert format_speech_gate_status(
         {
@@ -150,3 +167,29 @@ def test_listenerctl_formats_speaker_status():
     assert "queue=2" in text
     assert "current=seg-1" in text
     assert 'last_interrupt="voice command"' in text
+
+
+def test_listenerctl_formats_ready_status():
+    text = format_ready_status(
+        {
+            "ready": False,
+            "components": {
+                "audio": {
+                    "state": "failed",
+                    "ok": False,
+                    "critical": True,
+                },
+                "speaker": {
+                    "state": "started",
+                    "ok": True,
+                    "critical": False,
+                },
+            },
+            "last_error": "failed to start AudioAgent",
+        }
+    )
+
+    assert text.startswith("listener=not_ready")
+    assert "audio=failed!" in text
+    assert "speaker=started" in text
+    assert 'last_error="failed to start AudioAgent"' in text

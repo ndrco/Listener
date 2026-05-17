@@ -83,6 +83,19 @@ def build_parser() -> argparse.ArgumentParser:
         voice_alias.add_argument("--json", action="store_true", help="Print raw JSON response.")
         voice_alias.set_defaults(resource="speaker", action="enabled", enabled=enabled)
 
+    health = subparsers.add_parser("health", help="Check Listener control API liveness.")
+    health.add_argument("--json", action="store_true", help="Print raw JSON response.")
+    health.set_defaults(resource="service", action="health")
+
+    ready = subparsers.add_parser("ready", help="Check Listener service readiness.")
+    ready.add_argument("--json", action="store_true", help="Print raw JSON response.")
+    ready.set_defaults(resource="service", action="ready")
+
+    stop = subparsers.add_parser("stop", help="Ask Listener to stop gracefully.")
+    stop.add_argument("--reason", default="listenerctl", help="Human-readable reason.")
+    stop.add_argument("--json", action="store_true", help="Print raw JSON response.")
+    stop.set_defaults(resource="service", action="stop")
+
     return parser
 
 
@@ -187,6 +200,26 @@ def format_speaker_status(speaker: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def format_ready_status(data: dict[str, Any]) -> str:
+    state = "ready" if bool(data.get("ready")) else "not_ready"
+    parts = [f"listener={state}"]
+    components = data.get("components")
+    if isinstance(components, dict):
+        component_parts = []
+        for name, component in components.items():
+            if not isinstance(component, dict):
+                continue
+            component_state = str(component.get("state") or "unknown")
+            suffix = "!" if component.get("critical") and not component.get("ok") else ""
+            component_parts.append(f"{name}={component_state}{suffix}")
+        if component_parts:
+            parts.append("components=" + ",".join(component_parts))
+    last_error = data.get("last_error")
+    if last_error:
+        parts.append(f"last_error={json.dumps(str(last_error), ensure_ascii=False)}")
+    return " ".join(parts)
+
+
 def _format_seconds(value: Any) -> str:
     try:
         return f"{float(value):.1f}s"
@@ -234,6 +267,23 @@ def _print_speaker_response(data: dict[str, Any], *, raw_json: bool) -> None:
     print(format_speaker_status(speaker))
 
 
+def _print_service_response(data: dict[str, Any], *, raw_json: bool, ready: bool = False) -> None:
+    if raw_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if not data.get("ok"):
+        print(f"error: {data.get('error', 'unknown_error')}", file=sys.stderr)
+        return
+    if ready:
+        print(format_ready_status(data))
+        return
+    if data.get("stopping"):
+        print("listener stopping")
+        return
+    print("listener healthy")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -274,6 +324,27 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         _print_speaker_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "service" and args.action == "health":
+        status, data = request_json(args.url, "/health", token=args.token)
+        _print_service_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "service" and args.action == "ready":
+        status, data = request_json(args.url, "/ready", token=args.token)
+        _print_service_response(data, raw_json=args.json, ready=True)
+        return 0 if 200 <= status < 300 and data.get("ok") and data.get("ready") else 1
+
+    if args.resource == "service" and args.action == "stop":
+        status, data = request_json(
+            args.url,
+            "/shutdown",
+            method="POST",
+            token=args.token,
+            payload={"reason": args.reason},
+        )
+        _print_service_response(data, raw_json=args.json)
         return 0 if 200 <= status < 300 and data.get("ok") else 1
 
     parser.error("unsupported command")
