@@ -84,6 +84,9 @@ class StreamingConfig:
     min_chars: int = 40
     max_chars: int = 700
     flush_on_final: bool = True
+    final_history_check: bool = True
+    final_history_retries: int = 5
+    final_history_retry_delay_ms: int = 120
 
 
 @dataclass(slots=True)
@@ -346,6 +349,12 @@ def _normalize_runtime_config(config: Any) -> Any:
         min_chars=max(0, int(streaming.min_chars)),
         max_chars=max(1, int(streaming.max_chars)),
         flush_on_final=bool(streaming.flush_on_final),
+        final_history_check=bool(getattr(streaming, "final_history_check", True)),
+        final_history_retries=max(1, int(getattr(streaming, "final_history_retries", 5))),
+        final_history_retry_delay_ms=max(
+            0,
+            int(getattr(streaming, "final_history_retry_delay_ms", 120)),
+        ),
     )
     return replace(config, mode=mode, tts_mode=tts_mode, streaming=normalized_streaming)
 

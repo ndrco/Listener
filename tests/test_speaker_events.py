@@ -79,6 +79,21 @@ class ChatSpeechRouterTests(unittest.TestCase):
         self.assertEqual([segment.text for segment in history.segments], ["Второе предложение."])
         self.assertTrue(history.segments[0].final)
 
+    def test_final_with_stale_message_requests_history_and_speaks_missing_suffix(self):
+        router = ChatSpeechRouter(GatewayConfig(), StreamingConfig())
+
+        router.route(chat_event("delta", "Первое предложение."))
+        final = router.route(chat_event("final", "Первое предложение."))
+        history = router.route_final_text(
+            "run-1",
+            "Первое предложение. Второе предложение.",
+        )
+
+        self.assertEqual(final.segments, [])
+        self.assertTrue(final.needs_history)
+        self.assertEqual([segment.text for segment in history.segments], ["Второе предложение."])
+        self.assertTrue(history.segments[0].final)
+
     def test_non_prefix_delta_stops_without_repeating(self):
         router = ChatSpeechRouter(GatewayConfig(), StreamingConfig())
 
@@ -89,7 +104,7 @@ class ChatSpeechRouterTests(unittest.TestCase):
         self.assertEqual([segment.text for segment in first.segments], ["Первое."])
         self.assertEqual(broken.segments, [])
         self.assertEqual(final.segments, [])
-        self.assertFalse(final.needs_history)
+        self.assertTrue(final.needs_history)
 
     def test_partial_numbered_list_marker_does_not_break_streaming(self):
         router = ChatSpeechRouter(GatewayConfig(), StreamingConfig())

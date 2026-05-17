@@ -63,6 +63,10 @@ class ChatSpeechRouter:
         state.last_text = str(text or "")
         return self._flush_final(run_key, state)
 
+    def emitted_text(self, run_id: str) -> str:
+        state = self._runs.get(str(run_id or "unknown"))
+        return state.emitted_text if state is not None else ""
+
     def discard(self, run_id: str) -> None:
         self._runs.pop(str(run_id or "unknown"), None)
 
@@ -89,7 +93,14 @@ class ChatSpeechRouter:
         extracted = _extract_payload_message(payload, run_id)
         if extracted is not None:
             state.last_text = extracted.text
-            return self._flush_final(run_id, state)
+            if not self.streaming.final_history_check:
+                return self._flush_final(run_id, state)
+            segments = self._emit_available(
+                run_id,
+                state,
+                final=bool(self.streaming.flush_on_final),
+            )
+            return SpeechRouteResult(segments, needs_history=True)
         if not state.last_text:
             return SpeechRouteResult([], needs_history=True)
 

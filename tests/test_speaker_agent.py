@@ -10,8 +10,10 @@ if str(ROOT) not in sys.path:
 
 from agents.speaker_agent import SpeakerAgent, SpeechPlaybackController  # noqa: E402
 from core.config import cfg  # noqa: E402
+from core.runtime_state import RuntimeStateStore  # noqa: E402
 from speaker.config import SpeakerConfig  # noqa: E402
-from speaker.events import SpeechSegment  # noqa: E402
+from speaker.events import ChatSpeechRouter, SpeechSegment  # noqa: E402
+from speaker.messages import MessageDeduper  # noqa: E402
 
 
 class BlockingSpeech:
@@ -43,6 +45,38 @@ class RecordingEmojiDisplay:
 
     def get_status(self):
         return {"enabled": True}
+
+
+class HistoryGateway:
+    def __init__(self, history_text: str) -> None:
+        self.history_text = history_text
+        self.history_calls = 0
+
+    async def request(self, method, params, timeout_s=10.0):
+        self.history_calls += 1
+        return {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": self.history_text}],
+                    "__openclaw": {"id": "reply-1"},
+                }
+            ]
+        }
+
+
+def chat_event(state, text=None, *, run_id="run-1", session_key="main"):
+    payload = {
+        "runId": run_id,
+        "sessionKey": session_key,
+        "state": state,
+    }
+    if text is not None:
+        payload["message"] = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+        }
+    return {"type": "event", "event": "chat", "payload": payload}
 
 
 def test_speech_playback_controller_interrupts_current_speech():
@@ -184,5 +218,41 @@ def test_speaker_agent_restores_persisted_enabled_state(tmp_path):
                 await second.close()
         finally:
             cfg.control.state_path = old_state_path
+
+    asyncio.run(_runner())
+
+
+def test_speaker_agent_streaming_stale_final_history_queues_missing_tail():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            async def speak(self, text: str) -> None:
+                return None
+
+        config = SpeakerConfig()
+        config.enabled = True
+        config.speaker.mode = "streaming"
+        config.speaker.speak_existing_on_start = True
+        agent = SpeakerAgent(
+            config=config,
+            speech=RecordingSpeech(),
+            state_store=RuntimeStateStore(None),
+        )
+        gateway = HistoryGateway("Первое предложение. Второе **предложение**.")
+        router = ChatSpeechRouter(config.gateway, config.speaker.streaming)
+        deduper = MessageDeduper()
+
+        delta = chat_event("delta", "Первое предложение.")
+        await agent._handle_streaming_event(delta["payload"], delta, gateway, deduper, router)
+        final = chat_event("final", "Первое предложение.")
+        await agent._handle_streaming_event(final["payload"], final, gateway, deduper, router)
+
+        queued = []
+        while not agent._playback._queue.empty():
+            item = agent._playback._queue.get_nowait()
+            queued.append(item.text)
+            agent._playback._queue.task_done()
+
+        assert gateway.history_calls == 1
+        assert queued == ["Первое предложение.", "Второе предложение."]
 
     asyncio.run(_runner())

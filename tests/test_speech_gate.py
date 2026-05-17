@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from core.bus import Event  # noqa: E402
 from core.config import cfg  # noqa: E402
+from core.runtime_state import RuntimeStateStore  # noqa: E402
 import agents.speech_gate_agent as speech_gate_agent_module  # noqa: E402
 import llm.speech_gate as speech_gate_module  # noqa: E402
 from llm.speech_gate import SpeechDirectionGate, SpeechGateMode  # noqa: E402
@@ -413,7 +414,10 @@ def test_speech_gate_agent_loads_identity_once_on_start(monkeypatch):
             staticmethod(_wrapped_factory),
         )
         try:
-            agent = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=DummyBus(),
+                state_store=RuntimeStateStore(None),
+            )
             await agent.start()
             await agent.close()
         finally:
@@ -452,7 +456,10 @@ def test_speech_gate_agent_publishes_filtered_topic():
         cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
         try:
             bus = DummyBus()
-            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=bus,
+                state_store=RuntimeStateStore(None),
+            )
             await agent.start()
             try:
                 await agent._on_input_text(  # pylint: disable=protected-access
@@ -506,7 +513,10 @@ def test_speech_gate_agent_handles_local_voice_commands(monkeypatch):
         monkeypatch.setattr(speech_gate_agent_module, "emit_indicator", _fake_emit)
         try:
             bus = DummyBus()
-            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=bus,
+                state_store=RuntimeStateStore(None),
+            )
             await agent.start()
             try:
                 await agent._on_input_text(  # pylint: disable=protected-access
@@ -606,7 +616,10 @@ def test_speech_gate_agent_emits_rejected_indicator(monkeypatch):
         monkeypatch.setattr(speech_gate_agent_module, "emit_indicator", _fake_emit)
         try:
             bus = DummyBus()
-            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=bus,
+                state_store=RuntimeStateStore(None),
+            )
             await agent.start()
             try:
                 await agent._on_input_text(  # pylint: disable=protected-access
@@ -673,6 +686,7 @@ def test_speech_gate_agent_local_stop_command_calls_openclaw_abort(monkeypatch):
             agent = SpeechGateAgent(  # type: ignore[arg-type]
                 bus=bus,
                 on_local_stop=_fake_clear_pending,
+                state_store=RuntimeStateStore(None),
             )
             await agent.start()
             try:
@@ -720,7 +734,10 @@ def test_speech_gate_agent_runtime_mode_control():
         cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
         try:
             bus = DummyBus()
-            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=bus,
+                state_store=RuntimeStateStore(None),
+            )
             await agent.start()
             try:
                 await agent._on_input_text(  # pylint: disable=protected-access
@@ -785,7 +802,7 @@ def test_speech_gate_agent_restores_temporary_mode_after_restart(tmp_path):
             first = SpeechGateAgent(bus=DummyBus())  # type: ignore[arg-type]
             await first.start()
             try:
-                await first.set_mode("chatty", ttl_seconds=0.2, source="test", reason="persist me")
+                await first.set_mode("chatty", ttl_seconds=1.0, source="test", reason="persist me")
                 await asyncio.sleep(0.05)
             finally:
                 await first.close()
@@ -799,8 +816,9 @@ def test_speech_gate_agent_restores_temporary_mode_after_restart(tmp_path):
                 assert status["restore_mode"] == "normal"
                 assert status["source"] == "test"
                 assert status["reason"] == "persist me"
-                assert 0.0 < float(status["expires_in_seconds"]) <= 0.2
-                await asyncio.sleep(0.2)
+                expires_in = float(status["expires_in_seconds"])
+                assert 0.0 < expires_in <= 1.0
+                await asyncio.sleep(expires_in + 0.05)
                 assert second.get_status()["mode"] == "normal"
                 assert second.get_status()["temporary"] is False
             finally:
@@ -894,7 +912,10 @@ def test_speech_gate_agent_uses_mode_active_at_segment_start():
         cfg.speech_gate.identity_file = str(ROOT / "missing_identity.md")
         try:
             bus = DummyBus()
-            agent = SpeechGateAgent(bus=bus)  # type: ignore[arg-type]
+            agent = SpeechGateAgent(  # type: ignore[arg-type]
+                bus=bus,
+                state_store=RuntimeStateStore(None),
+            )
             await agent.start()
             try:
                 await agent.set_mode("chatty", ttl_seconds=0.05, source="test")

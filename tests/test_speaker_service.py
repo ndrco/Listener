@@ -8,7 +8,7 @@ class FakeGateway:
     def __init__(self, events=None, *, history_text="Final **answer**."):
         self.closed = False
         self.history_calls = 0
-        self.history_text = history_text
+        self.history_texts = list(history_text) if isinstance(history_text, list) else [history_text]
         self._events = events or [
             {
                 "type": "event",
@@ -24,12 +24,14 @@ class FakeGateway:
         self.closed = True
 
     async def request(self, method, params, timeout_s=10.0):
+        text_index = min(self.history_calls, len(self.history_texts) - 1)
+        history_text = self.history_texts[text_index]
         self.history_calls += 1
         return {
             "messages": [
                 {
                     "role": "assistant",
-                    "content": [{"type": "text", "text": self.history_text}],
+                    "content": [{"type": "text", "text": history_text}],
                     "__openclaw": {"id": "reply-1"},
                 }
             ]
@@ -62,7 +64,7 @@ class SpeakerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gateway.closed)
         self.assertEqual(speech.spoken, ["Final answer."])
 
-    async def test_streaming_chat_event_speaks_deltas_without_history_reads(self):
+    async def test_streaming_chat_event_speaks_deltas_and_checks_final_history(self):
         config = SpeakerConfig()
         config.speaker.mode = "streaming"
         config.speaker.speak_existing_on_start = True
@@ -94,14 +96,15 @@ class SpeakerServiceTests(unittest.IsolatedAsyncioTestCase):
                         },
                     },
                 },
-            ]
+            ],
+            history_text="Первое предложение. Второе",
         )
         speech = RecordingSpeech()
         service = SpeakerService(config, gateway=gateway, speech=speech)
 
         await service.run_until_disconnect()
 
-        self.assertEqual(gateway.history_calls, 0)
+        self.assertEqual(gateway.history_calls, 1)
         self.assertEqual(speech.spoken, ["Первое предложение.", "Второе"])
 
     async def test_streaming_ignores_other_session(self):
@@ -182,6 +185,96 @@ class SpeakerServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.run_until_disconnect()
 
         self.assertEqual(gateway.history_calls, 1)
+        self.assertEqual(speech.spoken, ["Первое предложение.", "Второе предложение."])
+
+    async def test_streaming_stale_final_message_uses_history_to_speak_missing_tail(self):
+        config = SpeakerConfig()
+        config.speaker.mode = "streaming"
+        config.speaker.speak_existing_on_start = True
+        gateway = FakeGateway(
+            [
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "state": "delta",
+                        "sessionKey": "main",
+                        "runId": "run-stream",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Первое предложение."}],
+                        },
+                    },
+                },
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "state": "final",
+                        "sessionKey": "main",
+                        "runId": "run-stream",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Первое предложение."}],
+                        },
+                    },
+                },
+            ],
+            history_text="Первое предложение. Второе **предложение**.",
+        )
+        speech = RecordingSpeech()
+        service = SpeakerService(config, gateway=gateway, speech=speech)
+
+        await service.run_until_disconnect()
+
+        self.assertEqual(gateway.history_calls, 1)
+        self.assertEqual(speech.spoken, ["Первое предложение.", "Второе предложение."])
+
+    async def test_streaming_final_history_retries_until_history_matches_stream_prefix(self):
+        config = SpeakerConfig()
+        config.speaker.mode = "streaming"
+        config.speaker.speak_existing_on_start = True
+        config.speaker.streaming.final_history_retry_delay_ms = 0
+        gateway = FakeGateway(
+            [
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "state": "delta",
+                        "sessionKey": "main",
+                        "runId": "run-stream",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Первое предложение."}],
+                        },
+                    },
+                },
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "state": "final",
+                        "sessionKey": "main",
+                        "runId": "run-stream",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Первое предложение."}],
+                        },
+                    },
+                },
+            ],
+            history_text=[
+                "Старая фраза.",
+                "Первое предложение. Второе **предложение**.",
+            ],
+        )
+        speech = RecordingSpeech()
+        service = SpeakerService(config, gateway=gateway, speech=speech)
+
+        await service.run_until_disconnect()
+
+        self.assertEqual(gateway.history_calls, 2)
         self.assertEqual(speech.spoken, ["Первое предложение.", "Второе предложение."])
 
 

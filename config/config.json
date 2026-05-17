@@ -76,7 +76,10 @@
       "chunking": "sentence",
       "min_chars": 40,
       "max_chars": 220,
-      "flush_on_final": true
+      "flush_on_final": true,
+      "final_history_check": true,
+      "final_history_retries": 5,
+      "final_history_retry_delay_ms": 120
     }
   },
   "indicators": {

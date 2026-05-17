@@ -525,17 +525,21 @@ class SpeakerAgent:
             len(result.segments),
         )
         try:
-            history = await self._load_history(gateway)
+            message = await self._load_final_history_message(
+                gateway,
+                run_id=run_id,
+                router=router,
+            )
         except GatewayError as exc:
             router.discard(run_id)
             log.warning("SpeakerAgent: unable to load chat history: %s", exc)
             return
-        message = extract_latest_assistant_text(history)
         if message is None:
             router.discard(run_id)
             log.debug("SpeakerAgent: history check found no assistant message run_id=%s", run_id)
             return
-        if deduper.seen(message):
+        expected_text = router.emitted_text(run_id)
+        if deduper.seen(message) and not expected_text:
             router.discard(run_id)
             log.debug(
                 "SpeakerAgent: history check skipped seen assistant message run_id=%s message=%s",
@@ -543,8 +547,15 @@ class SpeakerAgent:
                 message.identifier,
             )
             return
-        deduper.mark_seen(message)
         history_result = router.route_final_text(run_id, message.text)
+        if deduper.seen(message) and not history_result.segments:
+            log.debug(
+                "SpeakerAgent: history check skipped seen assistant message run_id=%s message=%s",
+                run_id,
+                message.identifier,
+            )
+            return
+        deduper.mark_seen(message)
         log.info(
             "SpeakerAgent: history check produced %d final segment(s) run_id=%s message=%s",
             len(history_result.segments),
@@ -553,6 +564,43 @@ class SpeakerAgent:
         )
         for segment in history_result.segments:
             self._enqueue(segment)
+
+    async def _load_final_history_message(
+        self,
+        gateway: GatewayClient,
+        *,
+        run_id: str,
+        router: ChatSpeechRouter,
+    ) -> ExtractedMessage | None:
+        streaming = self._config.speaker.streaming
+        retries = max(1, int(getattr(streaming, "final_history_retries", 5) or 1))
+        delay_s = max(
+            0.0,
+            float(getattr(streaming, "final_history_retry_delay_ms", 120) or 0) / 1000.0,
+        )
+        expected_text = router.emitted_text(run_id)
+        last_message: ExtractedMessage | None = None
+        for attempt in range(retries):
+            if attempt and delay_s > 0:
+                await asyncio.sleep(delay_s)
+            history = await self._load_history(gateway)
+            message = extract_latest_assistant_text(history)
+            if message is None:
+                continue
+            last_message = message
+            if not expected_text or message.text.startswith(expected_text):
+                return message
+            if attempt < retries - 1:
+                log.debug(
+                    "SpeakerAgent: history candidate does not match stream prefix "
+                    "run_id=%s attempt=%d/%d expected_chars=%d message_chars=%d",
+                    run_id,
+                    attempt + 1,
+                    retries,
+                    len(expected_text),
+                    len(message.text),
+                )
+        return last_message
 
     def _enqueue(self, segment: SpeechSegment) -> None:
         enqueued = self._playback.enqueue(segment)
