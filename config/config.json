@@ -4,7 +4,7 @@
   "description": "Configuration for Listener voice input runtime",
   "author": "NDRCo",
   "license": "MIT",
-  "debug": true,
+  "debug": false,
   "info": true,
   "preview_width": 960,
   "control": {
