@@ -111,8 +111,10 @@ systemctl --user restart listener.service
 systemctl --user stop listener.service
 ```
 
-The systemd unit uses `listenerctl stop` for graceful shutdown. If the process
-does not exit within `TimeoutStopSec`, systemd will terminate it.
+The systemd unit uses `listenerctl stop` for graceful shutdown. The `ExecStop`
+command is best-effort, so the unit does not fail if Listener already stopped
+itself through `/shutdown`. If the process does not exit within
+`TimeoutStopSec`, systemd will terminate it.
 
 ## Strict Startup
 

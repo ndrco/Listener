@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/home/re/src/Listener
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/main.py
-ExecStop=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py stop --reason systemd
+ExecStop=-/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py stop --reason systemd
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=30
