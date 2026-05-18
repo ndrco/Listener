@@ -1,6 +1,6 @@
-# Release Checklist
+# Release Workflow
 
-Use this checklist before publishing the first GitHub release.
+Use this checklist before publishing a Listener release.
 
 ## Repository Hygiene
 
@@ -32,24 +32,28 @@ curl -s http://127.0.0.1:18790/ | jq
 .venv/bin/python utils/listenerctl.py speaker on
 ```
 
-## Suggested First Tag
+## Next Tag
 
 ```bash
-git tag -a v0.1.0 -m "Listener v0.1.0"
+git tag -a v0.2.5 -m "Listener v0.2.5"
 git push origin main --tags
 ```
 
 Suggested release title:
 
 ```text
-Listener v0.1.0 - Linux voice runtime for OpenClaw
+Listener v0.2.5 - Emoji display simplification and import resilience
 ```
 
 Suggested release notes:
 
-- Linux-first microphone, VAD, STT and AEC loopback pipeline.
-- Whisper STT integration with async executor isolation.
-- SpeechGate directed-speech filtering with OpenClaw identity discovery.
-- Runtime SpeechGate control API and `listenerctl`.
-- OpenClaw workspace skill for voice-mode control.
-- Integrated Speaker playback for OpenClaw replies, with ducking and runtime control.
+- Simplified emoji display delivery: Listener now sends only the latest emoji
+  token from a segment and defaults `speaker.emoji_display.send` to `last`.
+- Kept backward compatibility for existing configs by accepting legacy `send=all`
+  and mapping it to `last`.
+- Made `audio` and `llm` package exports lazy so control, Speaker, and status
+  code paths can import cleanly before optional ML dependencies are loaded.
+- Changed `torch`-backed SpeechGate and Silero helpers to fail only when those
+  features are instantiated, rather than during unrelated module imports.
+- Expanded README and test coverage for the new emoji-display behavior.
+- Bumped runtime version to `0.2.5`.

@@ -10,7 +10,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Iterable, Tuple
 
-import torch
+try:  # pragma: no cover - import availability depends on environment
+    import torch
+except Exception:  # pragma: no cover - torch is optional for non-ML code paths
+    torch = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - import availability depends on environment
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -109,6 +112,8 @@ class DirectedIntentClassifier:
     """Wrapper around an Electra directed-speech classifier."""
 
     def __init__(self, model_path: str, device: str = "cpu", *, max_length: int = 64) -> None:
+        if torch is None:
+            raise RuntimeError("torch is not available")
         if AutoTokenizer is None or AutoModelForSequenceClassification is None:
             raise RuntimeError("transformers is not available")
         self.model_path = model_path

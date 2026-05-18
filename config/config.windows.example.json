@@ -17,7 +17,7 @@
       "hold_ms": 1200,
       "mode": "replace",
       "source": "listener",
-      "send": "all",
+      "send": "last",
       "clear_on_interrupt": true
     }
   },

@@ -29,7 +29,7 @@ def test_extract_emoji_for_speech_leaves_plain_digits_alone():
     assert parsed.tokens == ()
 
 
-def test_emoji_display_client_posts_sequence_payload():
+def test_emoji_display_client_posts_last_payload_without_queue():
     class RecordingClient(EmojiDisplayClient):
         def __init__(self) -> None:
             super().__init__(
@@ -37,7 +37,6 @@ def test_emoji_display_client_posts_sequence_payload():
                     enabled=True,
                     url="http://display.test",
                     hold_ms=900,
-                    mode="queue",
                     source="test",
                 )
             )
@@ -59,19 +58,14 @@ def test_emoji_display_client_posts_sequence_payload():
 
         assert client.posts == [
             (
-                "/v1/sequence",
+                "/v1/show",
                 {
-                    "items": [
-                        {
-                            "symbol": "🙂",
-                            "name": "slightly_smiling_face",
-                            "hold_ms": 900,
-                        },
-                        {"symbol": "✨", "name": "sparkles", "hold_ms": 900},
-                    ],
-                    "mode": "queue",
+                    "symbol": "✨",
+                    "name": "sparkles",
+                    "hold_ms": 900,
+                    "mode": "replace",
                     "source": "test",
-                    "id": "run-1:seg-1",
+                    "id": "run-1:seg-1:0",
                 },
             )
         ]
@@ -108,5 +102,37 @@ def test_emoji_display_client_first_mode_posts_single_payload():
         assert client.posts[0][0] == "/v1/show"
         assert client.posts[0][1]["symbol"] == "🙂"
         assert client.posts[0][1]["id"] == "run-1:seg-1:0"
+
+    asyncio.run(_runner())
+
+
+def test_emoji_display_client_legacy_all_mode_posts_last_payload():
+    class RecordingClient(EmojiDisplayClient):
+        def __init__(self) -> None:
+            super().__init__(
+                EmojiDisplayConfig(
+                    enabled=True,
+                    url="http://display.test",
+                    send="all",
+                )
+            )
+            self.posts: list[tuple[str, dict]] = []
+
+        def _post_json(self, path: str, payload: dict) -> None:
+            self.posts.append((path, payload))
+
+    async def _runner() -> None:
+        client = RecordingClient()
+        await client.show_tokens(
+            (
+                EmojiToken("🙂", 0, 1, "slightly_smiling_face"),
+                EmojiToken("✨", 2, 3, "sparkles"),
+            ),
+            run_id="run-1",
+            segment_id="seg-1",
+        )
+
+        assert client.posts[0][0] == "/v1/show"
+        assert client.posts[0][1]["symbol"] == "✨"
 
     asyncio.run(_runner())

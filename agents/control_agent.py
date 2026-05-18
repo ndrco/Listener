@@ -7,12 +7,14 @@ import contextlib
 import ipaddress
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from audio.ducking import restore_all_ducking
-from agents.speech_gate_agent import SpeechGateAgent
 from core.config import cfg
+
+if TYPE_CHECKING:
+    from agents.speech_gate_agent import SpeechGateAgent
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +25,7 @@ class ControlAgent:
     def __init__(
         self,
         *,
-        speech_gate: SpeechGateAgent | None = None,
+        speech_gate: "SpeechGateAgent | None" = None,
         speaker: Any | None = None,
         status_provider: Callable[[], dict[str, Any]] | None = None,
         shutdown_handler: Callable[[str], Awaitable[None] | None] | None = None,

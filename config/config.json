@@ -72,7 +72,7 @@
       "hold_ms": 7000,
       "mode": "replace",
       "source": "listener",
-      "send": "all",
+      "send": "last",
       "clear_on_interrupt": true
     },
     "streaming": {

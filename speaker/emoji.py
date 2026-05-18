@@ -97,22 +97,14 @@ class EmojiDisplayClient:
         if not selected or not self.config.enabled:
             return False
 
-        if len(selected) == 1:
-            path = "/v1/show"
-            payload = {
-                **self._token_payload(selected[0]),
-                "mode": self.config.mode,
-                "source": self.config.source,
-                "id": _event_id(run_id, segment_id, 0),
-            }
-        else:
-            path = "/v1/sequence"
-            payload = {
-                "items": [self._token_payload(token) for token in selected],
-                "mode": self.config.mode,
-                "source": self.config.source,
-                "id": _event_id(run_id, segment_id, None),
-            }
+        token = selected[0]
+        path = "/v1/show"
+        payload = {
+            **self._token_payload(token),
+            "mode": "replace",
+            "source": self.config.source,
+            "id": _event_id(run_id, segment_id, 0),
+        }
 
         try:
             await asyncio.to_thread(self._post_json, path, payload)
@@ -128,11 +120,10 @@ class EmojiDisplayClient:
 
         self._last_error = ""
         self._last_sent_count = len(selected)
-        self._last_sent_symbols = tuple(token.symbol for token in selected)
+        self._last_sent_symbols = (token.symbol,)
         self._last_sent_at = time.time()
         log.debug(
-            "EmojiDisplay: sent %d emoji(s) symbols=%s segment=%s run_id=%s",
-            len(selected),
+            "EmojiDisplay: sent emoji symbol=%s segment=%s run_id=%s",
             "".join(self._last_sent_symbols),
             segment_id,
             run_id,
@@ -175,7 +166,7 @@ class EmojiDisplayClient:
         selected = tuple(tokens)
         if self.config.send == "first":
             return selected[:1]
-        return selected
+        return selected[-1:]
 
     def _token_payload(self, token: EmojiToken) -> dict:
         return {

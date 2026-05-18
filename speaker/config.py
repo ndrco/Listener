@@ -107,7 +107,7 @@ class EmojiDisplayConfig:
     hold_ms: int = 1200
     mode: str = "replace"
     source: str = "listener"
-    send: str = "all"
+    send: str = "last"
     clear_on_interrupt: bool = True
 
 
@@ -381,9 +381,11 @@ def _normalize_emoji_display_config(config: EmojiDisplayConfig) -> EmojiDisplayC
     mode = str(config.mode or "replace").strip().casefold()
     if mode not in {"replace", "queue"}:
         raise ValueError("speaker.emoji_display.mode must be 'replace' or 'queue'")
-    send = str(config.send or "all").strip().casefold()
-    if send not in {"all", "first", "none"}:
-        raise ValueError("speaker.emoji_display.send must be 'all', 'first', or 'none'")
+    send = str(config.send or "last").strip().casefold()
+    if send not in {"all", "first", "last", "none"}:
+        raise ValueError("speaker.emoji_display.send must be 'all', 'first', 'last', or 'none'")
+    if send == "all":
+        send = "last"
     url = str(config.url or "http://127.0.0.1:18791").strip().rstrip("/")
     if not url:
         url = "http://127.0.0.1:18791"

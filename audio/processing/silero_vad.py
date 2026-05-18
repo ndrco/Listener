@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import numpy as np
-import torch
+try:  # pragma: no cover - import availability depends on environment
+    import torch
+except Exception:  # pragma: no cover - torch is optional for non-audio code paths
+    torch = None  # type: ignore[assignment]
 
 from core.config import AudioProcessingCfg, cfg as global_cfg
 
@@ -29,6 +32,8 @@ class SileroVADHelper:
     """
 
     def __init__(self, config: AudioProcessingCfg, *, debug: Optional[bool] = None) -> None:
+        if torch is None:
+            raise RuntimeError("torch is not available")
         self._cfg = config
         self._vad_cfg = getattr(config, "vad", None)
         self._debug = global_cfg.debug if debug is None else bool(debug)

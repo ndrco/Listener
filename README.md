@@ -340,7 +340,7 @@ Emoji-only segments can be displayed without creating empty TTS playback.
     "emoji_display": {
       "enabled": false,
       "url": "http://127.0.0.1:18791",
-      "send": "all",
+      "send": "last",
       "mode": "replace",
       "hold_ms": 2200,
       "clear_on_interrupt": true
@@ -349,9 +349,11 @@ Emoji-only segments can be displayed without creating empty TTS playback.
 }
 ```
 
-`speaker.emoji_display.send` can be `all`, `first`, or `none`; `mode` can be
-`replace` or `queue`. Listener only talks to the HTTP service and does not open
-serial/COM ports itself.
+`speaker.emoji_display.send` can be `last`, `first`, or `none`; the legacy
+value `all` is accepted as `last`. Listener never queues display symbols: if a
+text segment contains several emoji, only the latest extracted emoji is sent.
+Listener only talks to the HTTP service and does not open serial/COM ports
+itself.
 
 Quick checks:
 
