@@ -41,10 +41,14 @@ class SpeechGateAgent:
         *,
         bus: EventBus | None = None,
         on_local_stop: Callable[[], Awaitable[int] | int | None] | None = None,
+        on_local_speaker_on: Callable[[str], Awaitable[dict[str, Any] | Any] | dict[str, Any] | Any] | None = None,
+        on_local_speaker_off: Callable[[str], Awaitable[dict[str, Any] | Any] | dict[str, Any] | Any] | None = None,
         state_store: RuntimeStateStore | None = None,
     ) -> None:
         self._bus = bus or default_bus
         self._on_local_stop = on_local_stop
+        self._on_local_speaker_on = on_local_speaker_on
+        self._on_local_speaker_off = on_local_speaker_off
         self._state_store = state_store or RuntimeStateStore.from_config()
         self._running = False
         self._paused = False
@@ -255,6 +259,58 @@ class SpeechGateAgent:
             log.info(
                 "speech_gate: local command -> mode=%s assistant=%s phrase=%s text=%s",
                 status["mode"],
+                match.assistant_name,
+                match.phrase,
+                text,
+            )
+            await emit_indicator(INDICATOR_LOCAL_HANDLED)
+            return
+
+        if match.action == "speaker_on":
+            if self._on_local_speaker_on is None:
+                log.warning(
+                    "speech_gate: local speaker-on command ignored because Speaker callback is unavailable"
+                )
+                return
+            try:
+                maybe_status = self._on_local_speaker_on(reason)
+                if asyncio.iscoroutine(maybe_status):
+                    maybe_status = await maybe_status
+            except Exception:
+                log.exception("speech_gate: failed to enable spoken replies via local command")
+                return
+            enabled = None
+            if isinstance(maybe_status, dict) and "enabled" in maybe_status:
+                enabled = bool(maybe_status.get("enabled"))
+            log.info(
+                "speech_gate: local command -> speaker=%s assistant=%s phrase=%s text=%s",
+                "on" if enabled else "off" if enabled is not None else "unknown",
+                match.assistant_name,
+                match.phrase,
+                text,
+            )
+            await emit_indicator(INDICATOR_LOCAL_HANDLED)
+            return
+
+        if match.action == "speaker_off":
+            if self._on_local_speaker_off is None:
+                log.warning(
+                    "speech_gate: local speaker-off command ignored because Speaker callback is unavailable"
+                )
+                return
+            try:
+                maybe_status = self._on_local_speaker_off(reason)
+                if asyncio.iscoroutine(maybe_status):
+                    maybe_status = await maybe_status
+            except Exception:
+                log.exception("speech_gate: failed to disable spoken replies via local command")
+                return
+            enabled = None
+            if isinstance(maybe_status, dict) and "enabled" in maybe_status:
+                enabled = bool(maybe_status.get("enabled"))
+            log.info(
+                "speech_gate: local command -> speaker=%s assistant=%s phrase=%s text=%s",
+                "on" if enabled else "off" if enabled is not None else "unknown",
                 match.assistant_name,
                 match.phrase,
                 text,

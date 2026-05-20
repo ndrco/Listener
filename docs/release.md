@@ -35,25 +35,26 @@ curl -s http://127.0.0.1:18790/ | jq
 ## Next Tag
 
 ```bash
-git tag -a v0.2.5 -m "Listener v0.2.5"
+git tag -a v0.2.6 -m "Listener v0.2.6"
 git push origin main --tags
 ```
 
 Suggested release title:
 
 ```text
-Listener v0.2.5 - Emoji display simplification and import resilience
+Listener v0.2.6 - Speaker voice controls and ducking recovery
 ```
 
 Suggested release notes:
 
-- Simplified emoji display delivery: Listener now sends only the latest emoji
-  token from a segment and defaults `speaker.emoji_display.send` to `last`.
-- Kept backward compatibility for existing configs by accepting legacy `send=all`
-  and mapping it to `last`.
-- Made `audio` and `llm` package exports lazy so control, Speaker, and status
-  code paths can import cleanly before optional ML dependencies are loaded.
-- Changed `torch`-backed SpeechGate and Silero helpers to fail only when those
-  features are instantiated, rather than during unrelated module imports.
-- Expanded README and test coverage for the new emoji-display behavior.
-- Bumped runtime version to `0.2.5`.
+- Added local voice commands to disable and re-enable spoken replies with
+  phrases like `"<Имя> выключи озвучку"` and `"<Имя> включи озвучку"`.
+- Added an OpenClaw `listener-speaker-off` skill/tool for turning Listener
+  speech output off from the workspace.
+- Fixed ducking recovery so persisted baseline volumes survive stream
+  recreation and short sink-input disappearance during or after speech.
+- Taught forced ducking recovery to match streams by route key, not only by the
+  old sink-input id, which helps Chrome/PipeWire sessions recover their volume.
+- Expanded docs and regression coverage for speaker voice controls and ducking
+  restoration.
+- Bumped runtime version to `0.2.6`.

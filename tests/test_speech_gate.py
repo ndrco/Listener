@@ -42,6 +42,22 @@ def _build_gate() -> SpeechDirectionGate:
     return gate
 
 
+def _patch_cuda_available(monkeypatch, available: bool) -> None:
+    if speech_gate_module.torch is None:
+        class FakeCuda:
+            @staticmethod
+            def is_available() -> bool:
+                return available
+
+        class FakeTorch:
+            cuda = FakeCuda()
+
+        monkeypatch.setattr(speech_gate_module, "torch", FakeTorch())
+        return
+
+    monkeypatch.setattr(speech_gate_module.torch.cuda, "is_available", lambda: available)
+
+
 def test_speech_gate_allows_assistant_name_rule():
     gate = _build_gate()
     decision = gate.should_allow("Привет, kissa")
@@ -111,7 +127,7 @@ def test_speech_gate_classifier_falls_back_to_cpu_on_cuda_oom_during_load(
     cfg.speech_gate.model.device = "cuda"
     cfg.speech_gate.model.max_length = 64
     monkeypatch.setattr(speech_gate_module, "DirectedIntentClassifier", FakeClassifier)
-    monkeypatch.setattr(speech_gate_module.torch.cuda, "is_available", lambda: True)
+    _patch_cuda_available(monkeypatch, True)
     caplog.set_level(logging.WARNING, logger=speech_gate_module.log.name)
     try:
         classifier = gate._load_classifier()  # pylint: disable=protected-access
@@ -162,7 +178,7 @@ def test_speech_gate_classifier_falls_back_to_cpu_on_cuda_oom_during_inference(
     cfg.speech_gate.model.device = "cuda"
     cfg.speech_gate.model.max_length = 64
     monkeypatch.setattr(speech_gate_module, "DirectedIntentClassifier", FakeClassifier)
-    monkeypatch.setattr(speech_gate_module.torch.cuda, "is_available", lambda: True)
+    _patch_cuda_available(monkeypatch, True)
     caplog.set_level(logging.WARNING, logger=speech_gate_module.log.name)
     try:
         decision = gate.should_allow("Расскажи про погоду")
@@ -361,6 +377,16 @@ def test_speech_gate_detects_local_commands_without_swallowing_regular_prompt():
     assert standby is not None
     assert standby.action == "standby"
 
+    speaker_off = gate.detect_local_command("Kissa, отключи озвучку")
+    assert speaker_off is not None
+    assert speaker_off.action == "speaker_off"
+    assert speaker_off.phrase == "отключи озвучку"
+
+    speaker_on = gate.detect_local_command("Kissa, включи озвучку")
+    assert speaker_on is not None
+    assert speaker_on.action == "speaker_on"
+    assert speaker_on.phrase == "включи озвучку"
+
     stop = gate.detect_local_command("Kissa, стоп")
     assert stop is not None
     assert stop.action == "stop_generation"
@@ -499,10 +525,26 @@ def test_speech_gate_agent_handles_local_voice_commands(monkeypatch):
                 self.events.append((topic, payload))
 
         indicator_calls: list[str] = []
+        speaker_enable_calls: list[str] = []
+        speaker_disable_calls: list[str] = []
 
         async def _fake_emit(kind: str) -> bool:
             indicator_calls.append(kind)
             return True
+
+        async def _fake_disable_speaker(reason: str) -> dict[str, object]:
+            speaker_disable_calls.append(reason)
+            return {
+                "enabled": False,
+                "running": True,
+            }
+
+        async def _fake_enable_speaker(reason: str) -> dict[str, object]:
+            speaker_enable_calls.append(reason)
+            return {
+                "enabled": True,
+                "running": True,
+            }
 
         old_names = list(cfg.speech_gate.assistant_names)
         old_patterns_file = cfg.speech_gate.patterns_file
@@ -515,6 +557,8 @@ def test_speech_gate_agent_handles_local_voice_commands(monkeypatch):
             bus = DummyBus()
             agent = SpeechGateAgent(  # type: ignore[arg-type]
                 bus=bus,
+                on_local_speaker_on=_fake_enable_speaker,
+                on_local_speaker_off=_fake_disable_speaker,
                 state_store=RuntimeStateStore(None),
             )
             await agent.start()
@@ -568,11 +612,29 @@ def test_speech_gate_agent_handles_local_voice_commands(monkeypatch):
                 assert status["temporary"] is False
 
                 await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, выключи озвучку"})
+                )
+                assert speaker_disable_calls == [
+                    "voice command via kissa: выключи озвучку"
+                ]
+                assert agent.get_status()["mode"] == "standby"
+                assert bus.events[-1][1]["text"] == "Kissa, нет, я имел в виду Амстердам"
+
+                await agent._on_input_text(  # pylint: disable=protected-access
+                    Event(topic="llm/input_text", payload={"text": "Kissa, включи озвучку"})
+                )
+                assert speaker_enable_calls == [
+                    "voice command via kissa: включи озвучку"
+                ]
+                assert agent.get_status()["mode"] == "standby"
+                assert bus.events[-1][1]["text"] == "Kissa, нет, я имел в виду Амстердам"
+
+                await agent._on_input_text(  # pylint: disable=protected-access
                     Event(topic="llm/input_text", payload={"text": "Kissa, говори"})
                 )
                 assert agent.get_status()["mode"] == "normal"
                 assert bus.events[-1][1]["text"] == "Kissa, нет, я имел в виду Амстердам"
-                assert indicator_calls.count("local_handled") == 4
+                assert indicator_calls.count("local_handled") == 6
             finally:
                 await agent.close()
         finally:

@@ -79,8 +79,16 @@ class FakeOpenClawInputAgent:
 
 
 class FakeSpeechGateAgent:
-    def __init__(self, *, on_local_stop) -> None:
+    def __init__(
+        self,
+        *,
+        on_local_stop,
+        on_local_speaker_on=None,
+        on_local_speaker_off=None,
+    ) -> None:
         self.on_local_stop = on_local_stop
+        self.on_local_speaker_on = on_local_speaker_on
+        self.on_local_speaker_off = on_local_speaker_off
 
     async def start(self) -> None:
         return None

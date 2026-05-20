@@ -151,8 +151,28 @@ async def main() -> None:
             dropped += int(await speaker.interrupt(reason="local_stop") or 0)
         return dropped
 
+    async def _disable_speaker_for_local_command(reason: str) -> dict | None:
+        if speaker is None:
+            return None
+        return await speaker.set_enabled(
+            False,
+            source="speech_gate_local",
+            reason=reason,
+        )
+
+    async def _enable_speaker_for_local_command(reason: str) -> dict | None:
+        if speaker is None:
+            return None
+        return await speaker.set_enabled(
+            True,
+            source="speech_gate_local",
+            reason=reason,
+        )
+
     speech_gate = SpeechGateAgent(
         on_local_stop=_handle_local_stop,
+        on_local_speaker_on=_enable_speaker_for_local_command,
+        on_local_speaker_off=_disable_speaker_for_local_command,
     )
     try:
         await speech_gate.start()

@@ -173,6 +173,8 @@ the phrase is forwarded to OpenClaw:
 - `Имя, помолчи` -> switches SpeechGate to `mute`
 - `Имя, говори` -> switches SpeechGate to `normal`
 - `Имя, отключись` -> switches SpeechGate to `standby`
+- `Имя, включи озвучку` or `Имя, верни озвучку` -> enables spoken replies
+- `Имя, отключи озвучку` or `Имя, выключи озвучку` -> disables spoken replies
 - `Имя, стоп` -> calls OpenClaw `chat.abort` for the configured `openclaw.session_key`
 
 These local commands are intentionally swallowed by Listener and are not sent as
@@ -219,8 +221,10 @@ From the Listener repository:
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-rm -rf "$OPENCLAW_WORKSPACE/skills/listener-control"
-cp -R openclaw/skills/listener-control "$OPENCLAW_WORKSPACE/skills/"
+for skill in listener-control listener-speaker-off; do
+  rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
+  cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
+done
 ```
 
 Add local path notes to OpenClaw `TOOLS.md`:
@@ -253,7 +257,8 @@ cat >> "$OPENCLAW_WORKSPACE/AGENTS.md" <<'EOF'
 Some messages may come from Listener as voice transcripts through OpenClaw
 chat.send. When the user asks to change listening behavior, use the
 listener-control skill: chatty for conversation mode, mute for name-only mode,
-standby only with TTL, and normal to return to default filtering.
+standby only with TTL, and normal to return to default filtering. For disabling
+spoken replies, use listener-speaker-off or `listener-control speaker off`.
 EOF
 ```
 
@@ -293,6 +298,10 @@ The bundled `listener-control` skill exposes spoken-reply controls:
 - "turn spoken replies off", "do not read answers aloud" -> `speaker off`
 - "turn spoken replies on", "read answers aloud again" -> `speaker on`
 - spoken reply / voice output status -> `speaker status`
+
+For the narrow "disable speech right now" case, the bundled
+`listener-speaker-off` skill calls the dedicated helper
+`scripts/listener-speaker-off`.
 
 After changing Speaker state, the skill should run `speaker status` and report
 whether spoken replies are on or off.

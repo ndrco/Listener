@@ -496,6 +496,182 @@ class SpeechUnitTests(unittest.TestCase):
 
         asyncio.run(_runner())
 
+    def test_ducker_restore_recovers_recreated_stream_by_route_key(self):
+        class DuckerConfig:
+            enabled = True
+            fade_in_ms = 0
+            fade_out_ms = 0
+            volume_scale = 0.6
+
+        async def _runner():
+            metadata_calls: list[tuple[str, ...]] = []
+            state = {
+                "current": [
+                    SinkInputVolume(
+                        sink_input_id=7,
+                        volumes=[100, 100],
+                        channel_names=["front-left", "front-right"],
+                        application_name="Google Chrome",
+                        media_name="Playback",
+                    )
+                ]
+            }
+
+            async def fake_list_sink_inputs(*, exclude_speaker=True):
+                return [
+                    SinkInputVolume(
+                        sink_input_id=item.sink_input_id,
+                        volumes=list(item.volumes),
+                        channel_names=list(item.channel_names),
+                        application_name=item.application_name,
+                        media_name=item.media_name,
+                    )
+                    for item in state["current"]
+                ]
+
+            async def fake_run_pactl(*args):
+                self.assertEqual(args[0], "set-sink-input-volume")
+                sink_input_id = int(args[1])
+                for index, item in enumerate(state["current"]):
+                    if item.sink_input_id == sink_input_id:
+                        state["current"][index] = SinkInputVolume(
+                            sink_input_id=item.sink_input_id,
+                            volumes=[int(value) for value in args[2:]],
+                            channel_names=item.channel_names,
+                            application_name=item.application_name,
+                            media_name=item.media_name,
+                        )
+                        return
+                raise ducking_module.DuckingError(f"missing sink input {sink_input_id}")
+
+            async def fake_run_pw_metadata(*args):
+                metadata_calls.append(tuple(args))
+
+            ducking_module._ACTIVE_DUCKERS.clear()
+            ducking_module._DUCKING_ACTIVE_SCALES.clear()
+            ducking_module._DUCKING_ORIGINALS.clear()
+            with (
+                patch.object(ducking_module, "_list_sink_inputs", fake_list_sink_inputs),
+                patch.object(ducking_module, "_run_pactl", fake_run_pactl),
+                patch.object(ducking_module, "_run_pw_metadata", fake_run_pw_metadata),
+            ):
+                ducker = PulseAudioDucker(DuckerConfig(), exclude_speaker=False)
+
+                await ducker.duck()
+                self.assertEqual(state["current"][0].volumes, [60, 60])
+                state["current"] = [
+                    SinkInputVolume(
+                        sink_input_id=19,
+                        volumes=[60, 60],
+                        channel_names=["front-left", "front-right"],
+                        application_name="Google Chrome",
+                        media_name="Playback",
+                    )
+                ]
+
+                await ducker.restore()
+
+            self.assertEqual(state["current"][0].volumes, [100, 100])
+            self.assertFalse(ducking_module._DUCKING_STATE_PATH.exists())
+            self.assertTrue(metadata_calls)
+
+        asyncio.run(_runner())
+
+    def test_ducker_restore_keeps_persisted_baseline_until_forced_recovery(self):
+        class DuckerConfig:
+            enabled = True
+            fade_in_ms = 0
+            fade_out_ms = 0
+            volume_scale = 0.6
+
+        async def _runner():
+            metadata_calls: list[tuple[str, ...]] = []
+            state = {
+                "current": [
+                    SinkInputVolume(
+                        sink_input_id=7,
+                        volumes=[100, 100],
+                        channel_names=["front-left", "front-right"],
+                        application_name="Google Chrome",
+                        media_name="Playback",
+                    )
+                ]
+            }
+
+            async def fake_list_sink_inputs(*, exclude_speaker=True):
+                return [
+                    SinkInputVolume(
+                        sink_input_id=item.sink_input_id,
+                        volumes=list(item.volumes),
+                        channel_names=list(item.channel_names),
+                        application_name=item.application_name,
+                        media_name=item.media_name,
+                    )
+                    for item in state["current"]
+                ]
+
+            async def fake_run_pactl(*args):
+                self.assertEqual(args[0], "set-sink-input-volume")
+                sink_input_id = int(args[1])
+                for index, item in enumerate(state["current"]):
+                    if item.sink_input_id == sink_input_id:
+                        state["current"][index] = SinkInputVolume(
+                            sink_input_id=item.sink_input_id,
+                            volumes=[int(value) for value in args[2:]],
+                            channel_names=item.channel_names,
+                            application_name=item.application_name,
+                            media_name=item.media_name,
+                        )
+                        return
+                raise ducking_module.DuckingError(f"missing sink input {sink_input_id}")
+
+            async def fake_run_pw_metadata(*args):
+                metadata_calls.append(tuple(args))
+
+            async def fake_normalize_listener_output_state():
+                return {"route_keys": [], "stream_ids": []}
+
+            ducking_module._ACTIVE_DUCKERS.clear()
+            ducking_module._DUCKING_ACTIVE_SCALES.clear()
+            ducking_module._DUCKING_ORIGINALS.clear()
+            with (
+                patch.object(ducking_module, "_list_sink_inputs", fake_list_sink_inputs),
+                patch.object(ducking_module, "_run_pactl", fake_run_pactl),
+                patch.object(ducking_module, "_run_pw_metadata", fake_run_pw_metadata),
+                patch.object(
+                    ducking_module,
+                    "normalize_listener_output_volume_state",
+                    fake_normalize_listener_output_state,
+                ),
+            ):
+                ducker = PulseAudioDucker(DuckerConfig(), exclude_speaker=False)
+
+                await ducker.duck()
+                self.assertEqual(state["current"][0].volumes, [60, 60])
+
+                state["current"] = []
+                await ducker.restore()
+                self.assertTrue(ducking_module._DUCKING_STATE_PATH.exists())
+
+                state["current"] = [
+                    SinkInputVolume(
+                        sink_input_id=23,
+                        volumes=[60, 60],
+                        channel_names=["front-left", "front-right"],
+                        application_name="Google Chrome",
+                        media_name="Playback",
+                    )
+                ]
+                result = await restore_all_ducking()
+
+            self.assertEqual(state["current"][0].volumes, [100, 100])
+            self.assertTrue(result["restored"])
+            self.assertEqual(result["restored_sink_input_ids"], [23])
+            self.assertFalse(ducking_module._DUCKING_STATE_PATH.exists())
+            self.assertTrue(metadata_calls)
+
+        asyncio.run(_runner())
+
     def test_normalize_active_listener_output_streams_sync_sets_listener_stream_to_full_volume(self):
         payload = [
             {

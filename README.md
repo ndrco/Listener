@@ -251,13 +251,15 @@ Enable OpenClaw forwarding:
 }
 ```
 
-Install the bundled OpenClaw skill:
+Install the bundled OpenClaw skills:
 
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-rm -rf "$OPENCLAW_WORKSPACE/skills/listener-control"
-cp -R openclaw/skills/listener-control "$OPENCLAW_WORKSPACE/skills/"
+for skill in listener-control listener-speaker-off; do
+  rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
+  cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
+done
 ```
 
 Add local Listener notes to OpenClaw `TOOLS.md`:
@@ -424,6 +426,8 @@ anything is forwarded to OpenClaw:
 - `Имя, помолчи` -> `mute`
 - `Имя, говори` -> `normal`
 - `Имя, отключись` -> `standby`
+- `Имя, включи озвучку` or `Имя, верни озвучку` -> spoken replies `on`
+- `Имя, отключи озвучку` or `Имя, выключи озвучку` -> spoken replies `off`
 - `Имя, стоп` -> OpenClaw `chat.abort` for the configured `session_key`
 
 These local commands are swallowed by `SpeechGateAgent` and are not forwarded as
@@ -432,7 +436,8 @@ regular chat input.
 When integrated Speaker is enabled, `Имя, стоп` and explicit barge-in phrases
 also interrupt local TTS playback and clear queued spoken segments. OpenClaw can
 toggle spoken replies through the bundled skill with `speaker on`, `speaker off`
-and `speaker status`.
+and `speaker status`. A dedicated `listener-speaker-off` skill is also bundled
+for the narrow "stop speaking answers aloud" case.
 
 ## Speaker Troubleshooting
 

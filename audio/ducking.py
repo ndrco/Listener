@@ -97,7 +97,7 @@ class PulseAudioDucker:
                 target = _release_ducker_snapshot(self)
                 await _restore_snapshot_best_effort(target)
                 await _restore_route_settings_best_effort(original)
-                _clear_persisted_originals(original)
+                _forget_inactive_originals(item.sink_input_id for item in self._snapshot)
                 _ACTIVE_DUCKERS.discard(self)
                 self._snapshot = []
                 log.debug("audio.ducking: unavailable: %s", exc)
@@ -111,34 +111,53 @@ class PulseAudioDucker:
             original = _original_targets_for_snapshot(touched)
             targets = _release_ducker_snapshot(self)
             self._snapshot = []
-            current = await _current_snapshot_for(touched)
-            if not current:
+            current = await _list_sink_inputs(exclude_speaker=False)
+            restore_snapshot, missing_keys = _match_targets_against_current_streams(
+                targets,
+                current,
+            )
+            if not restore_snapshot:
                 log.debug(
                     "audio.ducking: restore skipped because sink input(s) disappeared ids=%s",
                     [item.sink_input_id for item in touched],
                 )
                 await _restore_route_settings_best_effort(original)
-                _forget_inactive_originals(item.sink_input_id for item in touched)
+                _forget_inactive_originals(
+                    (item.sink_input_id for item in touched),
+                    clear_persisted=False,
+                )
                 return
+            current_ids = {item.sink_input_id for item in restore_snapshot}
+            current_snapshot = [
+                item for item in current
+                if item.sink_input_id in current_ids
+            ]
             log.debug(
                 "audio.ducking: restoring %d sink input(s) ids=%s",
-                len(current),
-                [item.sink_input_id for item in current],
+                len(current_snapshot),
+                [item.sink_input_id for item in current_snapshot],
             )
             try:
                 await self._apply_steps(
                     build_volume_transition_steps(
-                        current,
-                        targets,
+                        current_snapshot,
+                        restore_snapshot,
                         int(getattr(self.config, "fade_out_ms", 0) or 0),
                     ),
                     int(getattr(self.config, "fade_out_ms", 0) or 0),
                 )
             except DuckingError:
-                await _restore_snapshot_best_effort(targets)
+                await _restore_snapshot_best_effort(restore_snapshot)
             finally:
                 await _restore_route_settings_best_effort(original)
-                _forget_inactive_originals(item.sink_input_id for item in touched)
+                inactive_originals = _forget_inactive_originals(
+                    (item.sink_input_id for item in touched),
+                    clear_persisted=False,
+                )
+                _clear_persisted_original_keys(
+                    _inactive_route_keys(inactive_originals)
+                    & _route_keys_for_snapshot(restore_snapshot)
+                )
 
     async def _apply_steps(self, steps: list[list[SinkInputVolume]], duration_ms: int) -> None:
         if not steps:
@@ -191,7 +210,7 @@ async def restore_all_ducking() -> dict[str, Any]:
             current,
         )
         await _restore_route_settings_best_effort(restore_targets)
-        _clear_persisted_originals(restore_targets)
+        _clear_persisted_original_keys(_route_keys_for_snapshot(restore_targets) - set(missing_keys))
         log.info(
             "audio.ducking: forced restore active_duckers=%d persisted=%d "
             "restored_ids=%s missing_keys=%s",
@@ -246,10 +265,8 @@ def _original_targets_for_snapshot(snapshot: list[SinkInputVolume]) -> list[Sink
 
 def _release_ducker_snapshot(ducker: PulseAudioDucker) -> list[SinkInputVolume]:
     targets: list[SinkInputVolume] = []
-    touched_ids: list[int] = []
     for item in ducker._snapshot:
         sink_input_id = item.sink_input_id
-        touched_ids.append(sink_input_id)
         scales = _DUCKING_ACTIVE_SCALES.get(sink_input_id)
         if scales:
             _remove_one_scale(scales, ducker._volume_scale)
@@ -257,7 +274,6 @@ def _release_ducker_snapshot(ducker: PulseAudioDucker) -> list[SinkInputVolume]:
                 _DUCKING_ACTIVE_SCALES.pop(sink_input_id, None)
         original = _DUCKING_ORIGINALS.get(sink_input_id, item)
         targets.append(_effective_target_for_original(original))
-    _forget_inactive_originals(touched_ids)
     return targets
 
 
@@ -284,7 +300,11 @@ def _effective_target_for_original(original: SinkInputVolume) -> SinkInputVolume
     return _scale_sink_input(original, min(scales))
 
 
-def _forget_inactive_originals(sink_input_ids: Iterable[int]) -> None:
+def _forget_inactive_originals(
+    sink_input_ids: Iterable[int],
+    *,
+    clear_persisted: bool = True,
+) -> list[SinkInputVolume]:
     inactive_originals: list[SinkInputVolume] = []
     for sink_input_id in sink_input_ids:
         if not _DUCKING_ACTIVE_SCALES.get(sink_input_id):
@@ -293,16 +313,9 @@ def _forget_inactive_originals(sink_input_ids: Iterable[int]) -> None:
                 inactive_originals.append(original)
             _DUCKING_ACTIVE_SCALES.pop(sink_input_id, None)
             _DUCKING_ORIGINALS.pop(sink_input_id, None)
-    inactive_keys = {_wireplumber_route_settings_key(item) for item in inactive_originals}
-    inactive_keys.discard("")
-    if not inactive_keys:
-        return
-    active_keys = {
-        _wireplumber_route_settings_key(item)
-        for sink_input_id, item in _DUCKING_ORIGINALS.items()
-        if _DUCKING_ACTIVE_SCALES.get(sink_input_id)
-    }
-    _clear_persisted_original_keys(inactive_keys - active_keys)
+    if clear_persisted:
+        _clear_persisted_original_keys(_inactive_route_keys(inactive_originals))
+    return inactive_originals
 
 
 async def _list_sink_inputs(*, exclude_speaker: bool = True) -> list[SinkInputVolume]:
@@ -473,40 +486,74 @@ async def _restore_targets_against_current_streams(
     targets: list[SinkInputVolume],
     current: list[SinkInputVolume],
 ) -> tuple[list[int], list[str]]:
+    restore_snapshot, missing_keys = _match_targets_against_current_streams(targets, current)
+    if restore_snapshot:
+        await _restore_snapshot_best_effort(restore_snapshot)
+    return [item.sink_input_id for item in restore_snapshot], missing_keys
+
+
+def _match_targets_against_current_streams(
+    targets: list[SinkInputVolume],
+    current: list[SinkInputVolume],
+) -> tuple[list[SinkInputVolume], list[str]]:
     restore_snapshot: list[SinkInputVolume] = []
     missing_keys: list[str] = []
-    current_by_key: dict[str, list[SinkInputVolume]] = {}
     current_by_id = {item.sink_input_id: item for item in current}
+    current_by_key: dict[str, list[SinkInputVolume]] = {}
     for item in current:
         key = _wireplumber_route_settings_key(item)
         if key:
             current_by_key.setdefault(key, []).append(item)
 
+    matched_ids: set[int] = set()
+    unresolved_by_key: dict[str, SinkInputVolume] = {}
+    unresolved_without_key: list[SinkInputVolume] = []
+
     for target in targets:
+        match = current_by_id.get(target.sink_input_id)
+        if match is not None:
+            restore_snapshot.append(_restore_snapshot_item_for_match(target, match))
+            matched_ids.add(match.sink_input_id)
+            continue
         key = _wireplumber_route_settings_key(target)
-        matches = current_by_key.get(key, []) if key else []
-        if not matches and target.sink_input_id in current_by_id:
-            matches = [current_by_id[target.sink_input_id]]
+        if key:
+            unresolved_by_key.setdefault(key, target)
+        else:
+            unresolved_without_key.append(target)
+
+    for key, target in unresolved_by_key.items():
+        matches = [
+            item
+            for item in current_by_key.get(key, [])
+            if item.sink_input_id not in matched_ids
+        ]
         if not matches:
-            missing_keys.append(key or str(target.sink_input_id))
+            missing_keys.append(key)
             continue
         for match in matches:
-            restore_snapshot.append(
-                SinkInputVolume(
-                    sink_input_id=match.sink_input_id,
-                    volumes=list(target.volumes),
-                    channel_names=match.channel_names or target.channel_names,
-                    application_id=target.application_id,
-                    application_name=target.application_name,
-                    media_name=target.media_name,
-                    media_role=target.media_role,
-                    node_name=target.node_name,
-                )
-            )
+            restore_snapshot.append(_restore_snapshot_item_for_match(target, match))
+            matched_ids.add(match.sink_input_id)
 
-    if restore_snapshot:
-        await _restore_snapshot_best_effort(restore_snapshot)
-    return [item.sink_input_id for item in restore_snapshot], missing_keys
+    for target in unresolved_without_key:
+        missing_keys.append(str(target.sink_input_id))
+
+    return restore_snapshot, missing_keys
+
+
+def _restore_snapshot_item_for_match(
+    target: SinkInputVolume,
+    match: SinkInputVolume,
+) -> SinkInputVolume:
+    return SinkInputVolume(
+        sink_input_id=match.sink_input_id,
+        volumes=list(target.volumes),
+        channel_names=match.channel_names or target.channel_names,
+        application_id=target.application_id,
+        application_name=target.application_name,
+        media_name=target.media_name,
+        media_role=target.media_role,
+        node_name=target.node_name,
+    )
 
 
 def _merge_originals_by_route_key(items: list[SinkInputVolume]) -> list[SinkInputVolume]:
@@ -643,6 +690,25 @@ def _sink_input_from_state(value: dict[str, Any]) -> SinkInputVolume | None:
         media_role=str(value.get("media_role") or ""),
         node_name=str(value.get("node_name") or ""),
     )
+
+
+def _route_keys_for_snapshot(snapshot: Iterable[SinkInputVolume]) -> set[str]:
+    keys = {_wireplumber_route_settings_key(item) for item in snapshot}
+    keys.discard("")
+    return keys
+
+
+def _inactive_route_keys(inactive_originals: Iterable[SinkInputVolume]) -> set[str]:
+    inactive_keys = _route_keys_for_snapshot(inactive_originals)
+    if not inactive_keys:
+        return set()
+    active_keys = {
+        _wireplumber_route_settings_key(item)
+        for sink_input_id, item in _DUCKING_ORIGINALS.items()
+        if _DUCKING_ACTIVE_SCALES.get(sink_input_id)
+    }
+    active_keys.discard("")
+    return inactive_keys - active_keys
 
 
 async def _run_pactl(*args: str) -> None:

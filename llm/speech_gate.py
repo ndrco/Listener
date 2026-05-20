@@ -39,6 +39,8 @@ _LOCAL_STANDBY_COMMANDS = frozenset(
         "не слушай",
     }
 )
+_LOCAL_SPEAKER_ON_COMMANDS = frozenset({"включи озвучку", "верни озвучку"})
+_LOCAL_SPEAKER_OFF_COMMANDS = frozenset({"отключи озвучку", "выключи озвучку"})
 _LOCAL_ABORT_COMMANDS = frozenset({"остановись", "стоп", "хватит", "прекрати", "достаточно", "стой"})
 _LOCAL_BARGE_IN_COMMANDS = frozenset(
     {
@@ -387,7 +389,11 @@ class SpeechDirectionGate:
             raise FileNotFoundError(f"speech gate model path does not exist: {model_path}")
 
         device = str(getattr(model_cfg, "device", "cpu"))
-        if device.startswith("cuda") and not torch.cuda.is_available():
+        cuda_available = bool(
+            torch is not None
+            and getattr(getattr(torch, "cuda", None), "is_available", lambda: False)()
+        )
+        if device.startswith("cuda") and not cuda_available:
             log.warning("speech_gate: cuda requested but unavailable, falling back to cpu")
             device = "cpu"
 
@@ -579,6 +585,14 @@ class SpeechDirectionGate:
             (
                 "standby",
                 self.patterns.get("local_standby_commands", set()) | _LOCAL_STANDBY_COMMANDS,
+            ),
+            (
+                "speaker_on",
+                self.patterns.get("local_speaker_on_commands", set()) | _LOCAL_SPEAKER_ON_COMMANDS,
+            ),
+            (
+                "speaker_off",
+                self.patterns.get("local_speaker_off_commands", set()) | _LOCAL_SPEAKER_OFF_COMMANDS,
             ),
             (
                 "stop_generation",

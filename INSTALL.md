@@ -256,11 +256,15 @@ Minimal config:
 
 Install the Listener control skill into the active OpenClaw workspace:
 
+Install the bundled OpenClaw skills:
+
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-rm -rf "$OPENCLAW_WORKSPACE/skills/listener-control"
-cp -R openclaw/skills/listener-control "$OPENCLAW_WORKSPACE/skills/"
+for skill in listener-control listener-speaker-off; do
+  rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
+  cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
+done
 ```
 
 Add local Listener notes to OpenClaw `TOOLS.md`:
@@ -293,7 +297,8 @@ cat >> "$OPENCLAW_WORKSPACE/AGENTS.md" <<'EOF'
 Some messages may come from Listener as voice transcripts through OpenClaw
 chat.send. When the user asks to change listening behavior, use the
 listener-control skill: chatty for conversation mode, mute for name-only mode,
-standby only with TTL, and normal to return to default filtering.
+standby only with TTL, and normal to return to default filtering. For disabling
+spoken replies, use listener-speaker-off or `listener-control speaker off`.
 EOF
 ```
 
