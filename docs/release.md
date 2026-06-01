@@ -35,26 +35,26 @@ curl -s http://127.0.0.1:18790/ | jq
 ## Next Tag
 
 ```bash
-git tag -a v0.2.6 -m "Listener v0.2.6"
+git tag -a v0.2.7 -m "Listener v0.2.7"
 git push origin main --tags
 ```
 
 Suggested release title:
 
 ```text
-Listener v0.2.6 - Speaker voice controls and ducking recovery
+Listener v0.2.7 - OpenClaw gateway v4 and emoji display while speaker is off
 ```
 
 Suggested release notes:
 
-- Added local voice commands to disable and re-enable spoken replies with
-  phrases like `"<Имя> выключи озвучку"` and `"<Имя> включи озвучку"`.
-- Added an OpenClaw `listener-speaker-off` skill/tool for turning Listener
-  speech output off from the workspace.
-- Fixed ducking recovery so persisted baseline volumes survive stream
-  recreation and short sink-input disappearance during or after speech.
-- Taught forced ducking recovery to match streams by route key, not only by the
-  old sink-input id, which helps Chrome/PipeWire sessions recover their volume.
-- Expanded docs and regression coverage for speaker voice controls and ducking
-  restoration.
-- Bumped runtime version to `0.2.6`.
+- Updated Listener's OpenClaw websocket clients to negotiate Gateway protocol
+  v4 for both input-side forwarding and SpeakerAgent history/event reads.
+- Kept emoji-display working even when spoken replies are disabled, so emoji can
+  still appear on the external display while local TTS stays off.
+- Added a loopback-only fallback for reading the local OpenClaw gateway token,
+  which fixes `device identity required` failures for Listener's websocket path.
+- Added an explicit PATH entry for `/home/re/.local/bin` in the Listener
+  systemd template so CLI fallback can still find `openclaw` when needed.
+- Expanded regression coverage for Gateway v4 compatibility and emoji-display
+  behavior with `speaker.enabled=false`.
+- Bumped runtime version to `0.2.7`.
