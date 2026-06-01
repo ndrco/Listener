@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from agents.openclaw_gateway import (  # noqa: E402
     remember_openclaw_chat_run,
     steer_openclaw_chat_session,
 )
+import agents.openclaw_gateway as openclaw_gateway_module  # noqa: E402
 from agents.openclaw_input_agent import OpenClawInputAgent  # noqa: E402
 from core.bus import Event  # noqa: E402
 from core.config import cfg  # noqa: E402
@@ -47,8 +49,39 @@ def test_gateway_rpc_client_uses_openclaw_allowed_client_id():
 
         frame = json.loads(ws.sent[0])
         assert frame["params"]["client"]["id"] == "gateway-client"
+        assert frame["params"]["minProtocol"] == 4
+        assert frame["params"]["maxProtocol"] == 4
 
     asyncio.run(_runner())
+
+
+def test_gateway_token_falls_back_to_local_openclaw_config(tmp_path, monkeypatch):
+    openclaw_config = tmp_path / ".openclaw" / "openclaw.json"
+    openclaw_config.parent.mkdir()
+    openclaw_config.write_text(
+        json.dumps({"gateway": {"auth": {"mode": "token", "token": "local-token"}}}),
+        encoding="utf-8",
+    )
+
+    old_openclaw_token = cfg.openclaw.gateway_token
+    speaker_gateway = getattr(getattr(cfg, "speaker", None), "gateway", None)
+    old_speaker_token = getattr(speaker_gateway, "token", None)
+    monkeypatch.setattr(cfg.openclaw, "gateway_token", None)
+    if speaker_gateway is not None:
+        monkeypatch.setattr(speaker_gateway, "token", None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("OPENCLAW_CONFIG", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    try:
+        assert (
+            openclaw_gateway_module._resolve_gateway_token("ws://127.0.0.1:18789")
+            == "local-token"
+        )
+        assert openclaw_gateway_module._resolve_gateway_token("wss://example.invalid") is None
+    finally:
+        cfg.openclaw.gateway_token = old_openclaw_token
+        if speaker_gateway is not None:
+            speaker_gateway.token = old_speaker_token
 
 
 def test_abort_openclaw_chat_session_uses_remembered_run_id_first(monkeypatch):

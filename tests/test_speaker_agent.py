@@ -13,6 +13,7 @@ from core.config import cfg  # noqa: E402
 from core.runtime_state import RuntimeStateStore  # noqa: E402
 from speaker.config import SpeakerConfig  # noqa: E402
 from speaker.events import ChatSpeechRouter, SpeechSegment  # noqa: E402
+from speaker.gateway import GatewayClient  # noqa: E402
 from speaker.messages import MessageDeduper  # noqa: E402
 
 
@@ -31,9 +32,10 @@ class BlockingSpeech:
 
 
 class RecordingEmojiDisplay:
-    def __init__(self) -> None:
+    def __init__(self, *, enabled: bool = True) -> None:
         self.shown = []
         self.cleared = []
+        self.config = type("EmojiDisplayConfig", (), {"enabled": enabled})()
 
     async def show_tokens(self, tokens, *, run_id, segment_id):
         self.shown.append(([token.symbol for token in tokens], run_id, segment_id))
@@ -103,6 +105,36 @@ def test_speech_playback_controller_interrupts_current_speech():
             assert controller.get_status()["last_interrupt_reason"] == "test"
         finally:
             await controller.close()
+
+    asyncio.run(_runner())
+
+
+def test_speaker_gateway_client_uses_protocol_v4():
+    async def _runner() -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+            async def recv(self) -> str:
+                import json
+
+                request = json.loads(self.sent[-1])
+                return json.dumps({"type": "res", "id": request["id"], "ok": True, "payload": {}})
+
+        import json
+
+        client = GatewayClient(SpeakerConfig().gateway)
+        client._ws = FakeWebSocket()  # pylint: disable=protected-access
+
+        await client._send_connect()  # pylint: disable=protected-access
+
+        frame = json.loads(client._ws.sent[0])  # type: ignore[union-attr]
+        assert frame["params"]["client"]["id"] == "gateway-client"
+        assert frame["params"]["minProtocol"] == 4
+        assert frame["params"]["maxProtocol"] == 4
 
     asyncio.run(_runner())
 
@@ -270,6 +302,39 @@ def test_speech_playback_controller_disable_drops_queued_segments():
     asyncio.run(_runner())
 
 
+def test_speech_playback_controller_shows_emoji_when_speech_disabled():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            def __init__(self) -> None:
+                self.spoken = []
+
+            async def speak(self, text: str) -> None:
+                self.spoken.append(text)
+
+        speech = RecordingSpeech()
+        display = RecordingEmojiDisplay(enabled=True)
+        controller = SpeechPlaybackController(
+            speech=speech,
+            queue_size=4,
+            enabled=False,
+            emoji_display=display,
+        )
+        await controller.start()
+        try:
+            assert controller.enqueue(SpeechSegment("seg-emoji", "Привет 🙂", "run-1")) is True
+            for _ in range(10):
+                if display.shown:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert speech.spoken == []
+            assert display.shown == [(["🙂"], "run-1", "seg-emoji")]
+        finally:
+            await controller.close()
+
+    asyncio.run(_runner())
+
+
 def test_speaker_agent_restores_persisted_enabled_state(tmp_path):
     async def _runner() -> None:
         class RecordingSpeech:
@@ -331,5 +396,50 @@ def test_speaker_agent_streaming_stale_final_history_queues_missing_tail():
 
         assert gateway.history_calls == 1
         assert queued == ["Первое предложение.", "Второе предложение."]
+
+    asyncio.run(_runner())
+
+
+def test_speaker_agent_keeps_gateway_running_for_emoji_display_when_speech_disabled():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            async def speak(self, text: str) -> None:
+                return None
+
+        class IdleGateway:
+            def __init__(self) -> None:
+                self.connected = asyncio.Event()
+                self.closed = asyncio.Event()
+
+            async def connect(self) -> None:
+                self.connected.set()
+
+            async def close(self) -> None:
+                self.closed.set()
+
+            async def events(self):
+                while not self.closed.is_set():
+                    await asyncio.sleep(0.01)
+                    if False:
+                        yield None
+
+        config = SpeakerConfig()
+        config.enabled = False
+        config.emoji_display.enabled = True
+        gateway = IdleGateway()
+        agent = SpeakerAgent(
+            config=config,
+            speech=RecordingSpeech(),
+            gateway_factory=lambda _cfg: gateway,
+            state_store=RuntimeStateStore(None),
+        )
+        try:
+            await agent.start()
+            await asyncio.wait_for(gateway.connected.wait(), timeout=1.0)
+
+            assert agent.get_status()["enabled"] is False
+            assert agent._gateway_task is not None
+        finally:
+            await agent.close()
 
     asyncio.run(_runner())

@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/re/src/Listener
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/re/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/main.py
 ExecReload=/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py speech_gate_reset --reason systemd-reload
 ExecStop=-/home/re/src/Listener/.venv/bin/python /home/re/src/Listener/utils/listenerctl.py stop --reason systemd

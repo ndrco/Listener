@@ -19,7 +19,7 @@ from . import __version__
 from .config import GatewayConfig
 
 log = logging.getLogger(__name__)
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 class GatewayError(RuntimeError):

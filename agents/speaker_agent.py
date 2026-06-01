@@ -51,6 +51,15 @@ class SpeechPlaybackController:
         self._interrupt_all_generation = 0
         self._interrupted_run_ids: set[str] = set()
 
+    def _emoji_display_enabled(self) -> bool:
+        emoji_display = self._emoji_display
+        if emoji_display is None:
+            return False
+        return bool(getattr(getattr(emoji_display, "config", None), "enabled", False))
+
+    def _accepts_segments(self) -> bool:
+        return self._enabled or self._emoji_display_enabled()
+
     async def start(self) -> None:
         if self._worker_task and not self._worker_task.done():
             return
@@ -77,7 +86,7 @@ class SpeechPlaybackController:
         return {**self.get_status(), "dropped": dropped}
 
     def enqueue(self, segment: SpeechSegment) -> bool:
-        if not self._enabled:
+        if not self._accepts_segments():
             return False
         if self._is_run_interrupted(segment.run_id):
             log.debug(
@@ -171,7 +180,7 @@ class SpeechPlaybackController:
             if segment is None:
                 self._queue.task_done()
                 break
-            if not self._enabled:
+            if not self._accepts_segments():
                 self._queue.task_done()
                 continue
             self._current_segment = segment
@@ -179,10 +188,12 @@ class SpeechPlaybackController:
             if self._is_segment_interrupted(segment, interrupt_generation):
                 await self._skip_interrupted_segment(segment)
                 continue
-            await self._ensure_run_ducking(segment.run_id)
-            if self._is_segment_interrupted(segment, interrupt_generation):
-                await self._skip_interrupted_segment(segment)
-                continue
+            should_speak = self._enabled
+            if should_speak:
+                await self._ensure_run_ducking(segment.run_id)
+                if self._is_segment_interrupted(segment, interrupt_generation):
+                    await self._skip_interrupted_segment(segment)
+                    continue
             parsed = extract_emoji_for_speech(segment.text)
             if parsed.tokens:
                 log.debug(
@@ -199,6 +210,10 @@ class SpeechPlaybackController:
                     )
             if self._is_segment_interrupted(segment, interrupt_generation):
                 await self._skip_interrupted_segment(segment)
+                continue
+            if not should_speak:
+                self._queue.task_done()
+                self._current_segment = None
                 continue
             if not parsed.speech_text:
                 log.info(
@@ -355,12 +370,15 @@ class SpeakerAgent:
         self._last_error = ""
         self._seen_delta_runs: set[str] = set()
 
+    def _should_listen_to_gateway(self) -> bool:
+        return bool(self._config.enabled or self._config.emoji_display.enabled)
+
     async def start(self) -> None:
         if self._running:
             return
         self._running = True
         await self._playback.start()
-        if self._config.enabled:
+        if self._should_listen_to_gateway():
             self._ensure_gateway_task()
         log.info("SpeakerAgent: started (enabled=%s)", self._config.enabled)
 
@@ -392,8 +410,11 @@ class SpeakerAgent:
             if self._running:
                 self._ensure_gateway_task()
         else:
-            await self._stop_gateway_task()
             await self._playback.set_enabled(False, reason=reason or source)
+            if not self._config.emoji_display.enabled:
+                await self._stop_gateway_task()
+            elif self._running:
+                self._ensure_gateway_task()
         self._enabled_source = str(source or "api")
         self._enabled_reason = str(reason or "")
         self._enabled_changed_at = time.time()
@@ -468,7 +489,7 @@ class SpeakerAgent:
 
     async def _run_forever(self) -> None:
         backoff_s = 1.0
-        while self._running and self._config.enabled:
+        while self._running and self._should_listen_to_gateway():
             try:
                 await self._run_until_disconnect()
                 backoff_s = 1.0
@@ -493,7 +514,7 @@ class SpeakerAgent:
             if not self._config.speaker.speak_existing_on_start:
                 await self._mark_current_message_seen(gateway, deduper)
             async for event in gateway.events():
-                if not self._running or not self._config.enabled:
+                if not self._running or not self._should_listen_to_gateway():
                     break
                 await self._handle_event(event, gateway, deduper, router)
         finally:
