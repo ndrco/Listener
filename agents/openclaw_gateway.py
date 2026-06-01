@@ -7,11 +7,13 @@ import contextlib
 import json
 import logging
 import os
+from pathlib import Path
 import shlex
 import subprocess
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from core.config import cfg
 from core import perf
@@ -28,7 +30,7 @@ log = logging.getLogger(__name__)
 _LAST_CHAT_RUN_BY_SESSION: dict[str, dict[str, Any]] = {}
 _GATEWAY_RPC_CLIENT: "OpenClawGatewayRpcClient | None" = None
 _GATEWAY_RPC_CLIENT_KEY: tuple[str, str | None] | None = None
-_PROTOCOL_VERSION = 3
+_PROTOCOL_VERSION = 4
 
 
 def build_openclaw_base_command(raw: Any) -> list[str]:
@@ -105,7 +107,7 @@ def _resolve_gateway_url() -> str:
     return "ws://127.0.0.1:18789"
 
 
-def _resolve_gateway_token() -> str | None:
+def _resolve_gateway_token(gateway_url: str | None = None) -> str | None:
     token = getattr(cfg.openclaw, "gateway_token", None)
     if token:
         return str(token)
@@ -114,6 +116,42 @@ def _resolve_gateway_token() -> str | None:
     speaker_token = getattr(speaker_gateway, "token", None)
     if speaker_token:
         return str(speaker_token)
+    env_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN")
+    if env_token:
+        return env_token
+    if _is_loopback_gateway_url(gateway_url or _resolve_gateway_url()):
+        return _read_openclaw_gateway_token()
+    return None
+
+
+def _is_loopback_gateway_url(gateway_url: str) -> bool:
+    try:
+        parsed = urlparse(str(gateway_url))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _read_openclaw_gateway_token() -> str | None:
+    config_path = Path(os.environ.get("OPENCLAW_CONFIG") or "~/.openclaw/openclaw.json").expanduser()
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    gateway = data.get("gateway")
+    if not isinstance(gateway, dict):
+        return None
+    auth = gateway.get("auth")
+    if not isinstance(auth, dict):
+        return None
+    if auth.get("mode") != "token":
+        return None
+    token = auth.get("token")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
     return None
 
 
@@ -296,7 +334,8 @@ def _format_gateway_error(error: Any) -> str:
 
 async def _get_gateway_rpc_client() -> OpenClawGatewayRpcClient:
     global _GATEWAY_RPC_CLIENT, _GATEWAY_RPC_CLIENT_KEY
-    key = (_resolve_gateway_url(), _resolve_gateway_token())
+    gateway_url = _resolve_gateway_url()
+    key = (gateway_url, _resolve_gateway_token(gateway_url))
     if _GATEWAY_RPC_CLIENT is None or _GATEWAY_RPC_CLIENT_KEY != key:
         if _GATEWAY_RPC_CLIENT is not None:
             await _GATEWAY_RPC_CLIENT.close()
