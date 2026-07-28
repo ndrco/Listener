@@ -8,8 +8,10 @@ import sys
 
 from .app import SpeakerService
 from .config import SpeakerConfig
+from .emoji import extract_emoji_for_speech
 from .messages import clean_for_speech
-from .tts import PiperSpeechEngine
+from .style import EmojiStyleResolver
+from .tts import SpeechRequest, create_speech_engine
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run", help="Run the OpenClaw speaker sidecar")
     sub.add_parser("print-config", help="Print effective config with secrets redacted")
 
-    say = sub.add_parser("say", help="Speak one text string through Piper")
+    say = sub.add_parser("say", help="Speak one text string through the configured TTS backend")
     say.add_argument("text", help="Text to synthesize and play")
     return parser
 
@@ -44,8 +46,30 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(config.to_redacted_dict(), indent=2, ensure_ascii=False))
         return 0
     if args.command == "say":
-        engine = PiperSpeechEngine(config.piper, config.playback)
-        asyncio.run(engine.speak(clean_for_speech(args.text)))
+        engine = create_speech_engine(config)
+        cleaned = clean_for_speech(args.text)
+        parsed = extract_emoji_for_speech(cleaned)
+        style = EmojiStyleResolver(config.tts.style).resolve(
+            cleaned,
+            parsed.tokens,
+            run_id="speaker-cli",
+        )
+        request = SpeechRequest(
+            text=parsed.speech_text,
+            run_id="speaker-cli",
+            segment_id="speaker-cli",
+            style_id=style.style_id,
+            instruction=style.instruction,
+            emoji=style.emoji,
+        )
+
+        async def _say() -> None:
+            try:
+                await engine.speak(request)
+            finally:
+                await engine.close()
+
+        asyncio.run(_say())
         return 0
     if args.command == "run":
         try:

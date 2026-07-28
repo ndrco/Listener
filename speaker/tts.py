@@ -11,8 +11,9 @@ import sys
 import tempfile
 import unicodedata
 import wave
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -23,7 +24,7 @@ try:  # pragma: no cover - availability is environment-dependent
 except Exception:  # pragma: no cover - handled by playback fallback
     sd = None  # type: ignore[assignment]
 
-from .config import PiperConfig, PlaybackConfig
+from .config import PiperConfig, PlaybackConfig, SpeakerConfig
 from .emoji import extract_emoji_for_speech
 
 
@@ -34,8 +35,47 @@ class SpeechError(RuntimeError):
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class SpeechRequest:
+    """A single synthesis request with model-neutral speaking style metadata."""
+
+    text: str
+    run_id: str = ""
+    segment_id: str = ""
+    style_id: str = "neutral"
+    instruction: str = ""
+    emoji: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "text", str(self.text or "").strip())
+        object.__setattr__(self, "run_id", str(self.run_id or "").strip())
+        object.__setattr__(self, "segment_id", str(self.segment_id or "").strip())
+        object.__setattr__(self, "style_id", str(self.style_id or "neutral").strip() or "neutral")
+        object.__setattr__(self, "instruction", str(self.instruction or "").strip())
+        if self.emoji is not None:
+            object.__setattr__(self, "emoji", str(self.emoji).strip() or None)
+
+    @classmethod
+    def coerce(cls, value: "SpeechRequest | str") -> "SpeechRequest":
+        if isinstance(value, cls):
+            return value
+        return cls(text=str(value or ""))
+
+
 class SpeechEngine(Protocol):
-    async def speak(self, text: str) -> None:
+    async def start(self) -> None:
+        ...
+
+    async def speak(self, request: SpeechRequest | str) -> None:
+        ...
+
+    async def interrupt(self, *, run_id: str | None = None) -> None:
+        ...
+
+    async def close(self) -> None:
+        ...
+
+    def get_status(self) -> dict[str, Any]:
         ...
 
 
@@ -54,57 +94,97 @@ class PiperSpeechEngine:
         self.manage_ducking = bool(manage_ducking)
         self._worker: _PiperWorkerClient | None = None
         self._worker_failed = False
+        self._active_run_id: str | None = None
 
-    async def speak(self, text: str) -> None:
-        parsed = extract_emoji_for_speech(text)
+    async def start(self) -> None:
+        """Piper remains lazy because loading it is inexpensive."""
+        return None
+
+    async def speak(self, request: SpeechRequest | str) -> None:
+        speech_request = SpeechRequest.coerce(request)
+        self._active_run_id = speech_request.run_id or None
+        parsed = extract_emoji_for_speech(speech_request.text)
         if parsed.tokens:
             log.debug("PiperSpeechEngine: stripped %d emoji(s) before synthesis", len(parsed.tokens))
         units = split_speech_units(parsed.speech_text)
         if not units:
+            self._active_run_id = None
             return
-        if self.prefetch:
-            await self._speak_prefetch(units)
+        try:
+            if self.prefetch:
+                await self._speak_prefetch(units)
+                return
+            with tempfile.TemporaryDirectory(prefix="speaker-") as tmp:
+                ducker = PulseAudioDucker(self.playback.ducking)
+                ducked = False
+                try:
+                    for index, unit in enumerate(units):
+                        output = Path(tmp) / f"speech-{index}.wav"
+                        synth_start_ns = _perf_now()
+                        await self._synthesize(unit, output)
+                        synth_done_ns = _perf_now()
+                        synth_ms = _perf_elapsed(synth_start_ns, synth_done_ns)
+                        _perf_emit(
+                            "speaker",
+                            "synth_done",
+                            segment_index=index,
+                            synth_ms=synth_ms,
+                        )
+                        if self.manage_ducking and not ducked:
+                            await ducker.duck()
+                            ducked = True
+                        play_start_ns = _perf_now()
+                        _perf_emit("speaker", "playback_start", segment_index=index)
+                        await self._play(output)
+                        _perf_emit(
+                            "speaker",
+                            "playback_done",
+                            segment_index=index,
+                            playback_total_ms=_perf_elapsed(play_start_ns),
+                        )
+                        _perf_emit(
+                            "summary",
+                            "tts_segment",
+                            segment_index=index,
+                            text_to_synth_start_ms=0.0,
+                            synth_ms=synth_ms,
+                            playback_start_delay_ms=_perf_elapsed(synth_done_ns, play_start_ns),
+                            playback_total_ms=_perf_elapsed(play_start_ns),
+                        )
+                finally:
+                    if self.manage_ducking and ducked:
+                        await ducker.restore()
+        finally:
+            self._active_run_id = None
+
+    async def interrupt(self, *, run_id: str | None = None) -> None:
+        active_run_id = self._active_run_id
+        if run_id is not None and active_run_id is not None and run_id != active_run_id:
             return
-        with tempfile.TemporaryDirectory(prefix="speaker-") as tmp:
-            ducker = PulseAudioDucker(self.playback.ducking)
-            ducked = False
-            try:
-                for index, unit in enumerate(units):
-                    output = Path(tmp) / f"speech-{index}.wav"
-                    synth_start_ns = _perf_now()
-                    await self._synthesize(unit, output)
-                    synth_done_ns = _perf_now()
-                    synth_ms = _perf_elapsed(synth_start_ns, synth_done_ns)
-                    _perf_emit(
-                        "speaker",
-                        "synth_done",
-                        segment_index=index,
-                        synth_ms=synth_ms,
-                    )
-                    if self.manage_ducking and not ducked:
-                        await ducker.duck()
-                        ducked = True
-                    play_start_ns = _perf_now()
-                    _perf_emit("speaker", "playback_start", segment_index=index)
-                    await self._play(output)
-                    _perf_emit(
-                        "speaker",
-                        "playback_done",
-                        segment_index=index,
-                        playback_total_ms=_perf_elapsed(play_start_ns),
-                    )
-                    _perf_emit(
-                        "summary",
-                        "tts_segment",
-                        segment_index=index,
-                        text_to_synth_start_ms=0.0,
-                        synth_ms=synth_ms,
-                        playback_start_delay_ms=_perf_elapsed(synth_done_ns, play_start_ns),
-                        playback_total_ms=_perf_elapsed(play_start_ns),
-                    )
-            finally:
-                if self.manage_ducking and ducked:
-                    await ducker.restore()
+        if sd is not None:
+            with contextlib.suppress(Exception):
+                sd.stop()
+        worker = self._worker
+        self._worker = None
+        if worker is not None:
+            await worker.close()
+
+    async def close(self) -> None:
+        await self.interrupt()
+
+    def get_status(self) -> dict[str, Any]:
+        worker = self._worker
+        return {
+            "backend": "piper",
+            "persistent": bool(self.prefetch),
+            "worker_running": bool(
+                worker is not None
+                and worker._proc is not None  # noqa: SLF001 - status belongs to the owner
+                and worker._proc.returncode is None  # noqa: SLF001
+            ),
+            "worker_failed": bool(self._worker_failed),
+            "active_run_id": self._active_run_id,
+        }
 
     async def _speak_prefetch(self, units: list[str]) -> None:
         with tempfile.TemporaryDirectory(prefix="speaker-") as tmp:
@@ -258,6 +338,109 @@ class PiperSpeechEngine:
             raise SpeechError(f"Player timed out after {self.playback.timeout_s:.1f}s") from exc
         if proc.returncode != 0:
             raise SpeechError(_format_subprocess_error("Player", proc.returncode, stderr))
+
+
+def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
+    """Build the configured backend without silently substituting another model."""
+
+    backend = str(config.tts.backend or "piper").strip().casefold()
+    persistent = config.speaker.tts_mode == "persistent"
+    fallback = PiperSpeechEngine(
+        config.piper,
+        config.playback,
+        prefetch=persistent,
+        manage_ducking=not persistent,
+    )
+    if backend == "piper":
+        return fallback
+    if not persistent:
+        raise SpeechError(
+            f"TTS backend {backend!r} requires speaker.tts_mode='persistent'"
+        )
+    if config.tts.fallback_backend != "piper":
+        raise SpeechError("Only Piper is currently supported as a neural TTS fallback")
+    if backend == "voxcpm2":
+        from .neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
+        from .neural_worker_client import NeuralWorkerClient
+
+        worker_path = Path(__file__).with_name("workers") / "voxcpm2_worker.py"
+        vox = config.voxcpm2
+        command = [
+            vox.python,
+            str(worker_path),
+            "--model",
+            vox.model_path,
+            "--device",
+            vox.device,
+            "--seed",
+            str(vox.seed),
+            "--cfg-value",
+            str(vox.cfg_value),
+            "--inference-timesteps",
+            str(vox.inference_timesteps),
+            "--compile-threads",
+            str(vox.compile_threads),
+            "--optimize" if vox.optimize else "--no-optimize",
+            "--load-denoiser" if vox.load_denoiser else "--no-load-denoiser",
+            "--local-files-only" if vox.local_files_only else "--no-local-files-only",
+            "--warmup" if vox.warmup else "--no-warmup",
+        ]
+        if vox.reference_wav_path:
+            command.extend(["--reference-wav", vox.reference_wav_path])
+        client = NeuralWorkerClient(
+            command,
+            startup_timeout_s=config.tts.startup_timeout_s,
+            generation_timeout_s=config.tts.generation_timeout_s,
+            cancel_timeout_s=config.tts.cancel_timeout_s,
+        )
+        primary = NeuralSpeechEngine(backend="voxcpm2", client=client)
+        return FallbackSpeechEngine(
+            primary,
+            fallback,
+            max_consecutive_errors=config.tts.max_consecutive_errors,
+        )
+    if backend == "cosyvoice3":
+        from .neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
+        from .neural_worker_client import NeuralWorkerClient
+
+        worker_path = Path(__file__).with_name("workers") / "cosyvoice3_worker.py"
+        cosy = config.cosyvoice3
+        command = [
+            cosy.python,
+            str(worker_path),
+            "--repo",
+            cosy.repo_path,
+            "--model",
+            cosy.model_path,
+            "--prompt-wav",
+            cosy.prompt_wav_path,
+            "--device",
+            cosy.device,
+            "--wetext-path",
+            cosy.wetext_path,
+            "--speed",
+            str(cosy.speed),
+            "--fp16" if cosy.fp16 else "--no-fp16",
+            "--load-trt" if cosy.load_trt else "--no-load-trt",
+            "--local-files-only" if cosy.local_files_only else "--no-local-files-only",
+            "--warmup" if cosy.warmup else "--no-warmup",
+            "--enable-vocal-events"
+            if cosy.enable_vocal_events
+            else "--no-enable-vocal-events",
+        ]
+        client = NeuralWorkerClient(
+            command,
+            startup_timeout_s=config.tts.startup_timeout_s,
+            generation_timeout_s=config.tts.generation_timeout_s,
+            cancel_timeout_s=config.tts.cancel_timeout_s,
+        )
+        primary = NeuralSpeechEngine(backend="cosyvoice3", client=client)
+        return FallbackSpeechEngine(
+            primary,
+            fallback,
+            max_consecutive_errors=config.tts.max_consecutive_errors,
+        )
+    raise SpeechError(f"Unknown TTS backend: {backend!r}")
 
 
 def split_speech_units(text: str, *, include_incomplete: bool = True) -> list[str]:

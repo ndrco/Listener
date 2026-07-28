@@ -1,0 +1,11 @@
+# Tested Listener VoxCPM2 worker environment for RTX 50-series
+# (Blackwell/sm_120) with a CUDA 12.8-capable NVIDIA driver.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+setuptools==80.9.0
+torch==2.8.0
+torchaudio==2.8.0
+# CPU TorchCodec avoids an unnecessary CUDA NPP dependency while decoding WAV.
+# Model inference still runs on CUDA.
+torchcodec @ https://download.pytorch.org/whl/cpu/torchcodec-0.7.0-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=afb1c48b52bd4ee8f485f5a427bb4e82380590255a26b8e9e3fe099e0779287f
+voxcpm==2.0.3

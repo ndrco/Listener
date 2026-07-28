@@ -45,9 +45,11 @@ class FakeGateway:
 class RecordingSpeech:
     def __init__(self):
         self.spoken = []
+        self.requests = []
 
-    async def speak(self, text):
-        self.spoken.append(text)
+    async def speak(self, request):
+        self.requests.append(request)
+        self.spoken.append(request.text)
 
 
 class SpeakerServiceTests(unittest.IsolatedAsyncioTestCase):

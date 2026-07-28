@@ -19,12 +19,74 @@ from speaker.tts import (
     build_playback_args,
     build_stream_restore_id,
     resolve_piper_command,
+    create_speech_engine,
     split_complete_speech_units,
     split_speech_units,
 )
 
 
 class SpeechUnitTests(unittest.TestCase):
+    def test_factory_keeps_piper_as_backward_compatible_default(self):
+        from speaker.config import SpeakerConfig
+
+        engine = create_speech_engine(SpeakerConfig())
+
+        self.assertIsInstance(engine, PiperSpeechEngine)
+
+    def test_factory_builds_isolated_voxcpm_worker_with_piper_fallback(self):
+        from speaker.config import SpeakerConfig
+        from speaker.neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
+
+        config = SpeakerConfig().merge_dict(
+            {
+                "tts": {"backend": "voxcpm2"},
+                "voxcpm2": {
+                    "python": "/tmp/vox-python",
+                    "model_path": "/tmp/vox-model",
+                    "reference_wav_path": "/tmp/reference.wav",
+                },
+            }
+        )
+
+        engine = create_speech_engine(config)
+
+        self.assertIsInstance(engine, FallbackSpeechEngine)
+        self.assertIsInstance(engine.primary, NeuralSpeechEngine)
+        command = engine.primary.client.command
+        self.assertEqual(command[0], "/tmp/vox-python")
+        self.assertIn("voxcpm2_worker.py", command[1])
+        self.assertIn("/tmp/vox-model", command)
+        self.assertIn("/tmp/reference.wav", command)
+
+    def test_factory_builds_isolated_cosyvoice_worker(self):
+        from speaker.config import SpeakerConfig
+        from speaker.neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
+
+        config = SpeakerConfig().merge_dict(
+            {
+                "tts": {"backend": "cosyvoice3"},
+                "cosyvoice3": {
+                    "python": "/tmp/cosy-python",
+                    "repo_path": "/tmp/cosy-repo",
+                    "model_path": "/tmp/cosy-model",
+                    "prompt_wav_path": "/tmp/prompt.wav",
+                    "wetext_path": "/tmp/wetext",
+                },
+            }
+        )
+
+        engine = create_speech_engine(config)
+
+        self.assertIsInstance(engine, FallbackSpeechEngine)
+        self.assertIsInstance(engine.primary, NeuralSpeechEngine)
+        command = engine.primary.client.command
+        self.assertEqual(command[0], "/tmp/cosy-python")
+        self.assertIn("cosyvoice3_worker.py", command[1])
+        self.assertIn("/tmp/cosy-repo", command)
+        self.assertIn("/tmp/cosy-model", command)
+        self.assertIn("/tmp/prompt.wav", command)
+        self.assertIn("/tmp/wetext", command)
+
     def setUp(self):
         self._ducking_state_dir = TemporaryDirectory()
         self._old_ducking_state_path = ducking_module._DUCKING_STATE_PATH
@@ -708,6 +770,14 @@ class SpeechUnitTests(unittest.TestCase):
             [("set-sink-input-volume", "47076", "65536")],
         )
         self.assertTrue(metadata_calls)
+        self.assertTrue(
+            any(
+                call[1].startswith(
+                    "restore.stream.Output/Audio.application.name:PipeWire ALSA [python"
+                )
+                for call in metadata_calls
+            )
+        )
 
 
 if __name__ == "__main__":

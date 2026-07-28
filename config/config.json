@@ -40,6 +40,48 @@
     "tts_mode": "persistent",
     "speak_existing_on_start": false,
     "queue_size": 32,
+    "tts": {
+      "backend": "piper",
+      "fallback_backend": "piper",
+      "startup_timeout_s": 45,
+      "generation_timeout_s": 120,
+      "cancel_timeout_s": 1,
+      "max_consecutive_errors": 3,
+      "style": {
+        "enabled": true,
+        "inherit_within_run": true,
+        "leading_emoji_only": true,
+        "default_style": "neutral"
+      }
+    },
+    "voxcpm2": {
+      "python": "/home/re/src/TTS test/VoxCPM2/.mamba/envs/.venv/bin/python",
+      "model_path": "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2",
+      "reference_wav_path": "/home/re/src/TTS test/VoxCPM2/Reference/Nata.wav",
+      "device": "cuda",
+      "optimize": true,
+      "load_denoiser": false,
+      "local_files_only": true,
+      "seed": 42,
+      "cfg_value": 2.0,
+      "inference_timesteps": 10,
+      "warmup": true,
+      "compile_threads": 4
+    },
+    "cosyvoice3": {
+      "python": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/.mamba/envs/.venv/bin/python",
+      "repo_path": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice",
+      "model_path": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B",
+      "prompt_wav_path": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/Reference/Nata.wav",
+      "device": "cuda",
+      "local_files_only": true,
+      "fp16": true,
+      "load_trt": false,
+      "wetext_path": "/home/re/.cache/modelscope/hub/pengzhendong/wetext",
+      "warmup": true,
+      "speed": 1.0,
+      "enable_vocal_events": false
+    },
     "gateway": {
       "url": "ws://127.0.0.1:18789",
       "session_key": "main",

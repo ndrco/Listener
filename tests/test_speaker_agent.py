@@ -216,6 +216,25 @@ def test_speech_playback_controller_drops_late_segments_for_interrupted_run():
     asyncio.run(_runner())
 
 
+def test_global_interrupt_drops_late_segments_from_current_run():
+    async def _runner() -> None:
+        speech = BlockingSpeech()
+        controller = SpeechPlaybackController(speech=speech, queue_size=4, enabled=True)
+        await controller.start()
+        try:
+            assert controller.enqueue(SpeechSegment("seg-1", "Old.", "run-1")) is True
+            await asyncio.wait_for(speech.started.wait(), timeout=1.0)
+
+            assert await controller.interrupt(reason="speaker_off") == 1
+
+            assert controller.enqueue(SpeechSegment("seg-late", "Late.", "run-1")) is False
+            assert controller.enqueue(SpeechSegment("seg-new", "New.", "run-2")) is True
+        finally:
+            await controller.close()
+
+    asyncio.run(_runner())
+
+
 def test_speech_playback_controller_strips_and_forwards_emoji():
     async def _runner() -> None:
         class RecordingSpeech:
@@ -223,8 +242,8 @@ def test_speech_playback_controller_strips_and_forwards_emoji():
                 self.spoken = []
                 self.done = asyncio.Event()
 
-            async def speak(self, text: str) -> None:
-                self.spoken.append(text)
+            async def speak(self, request) -> None:
+                self.spoken.append(request)
                 self.done.set()
 
         speech = RecordingSpeech()
@@ -240,12 +259,39 @@ def test_speech_playback_controller_strips_and_forwards_emoji():
             assert controller.enqueue(SpeechSegment("seg-1", "Привет 🙂!", "run-1"))
             await asyncio.wait_for(speech.done.wait(), timeout=1.0)
 
-            assert speech.spoken == ["Привет!"]
+            assert [request.text for request in speech.spoken] == ["Привет!"]
+            assert speech.spoken[0].style_id == "neutral"
             assert display.shown == [(["🙂"], "run-1", "seg-1")]
         finally:
             await controller.close()
 
     asyncio.run(_runner())
+
+
+def test_speech_playback_controller_resolves_style_before_queueing():
+    class RecordingSpeech:
+        async def speak(self, request) -> None:
+            return None
+
+    controller = SpeechPlaybackController(
+        speech=RecordingSpeech(),
+        queue_size=4,
+        enabled=True,
+    )
+
+    assert controller.enqueue(SpeechSegment("seg-1", "😌 Спокойно.", "run-1"))
+    assert controller.enqueue(SpeechSegment("seg-2", "Продолжаем.", "run-1"))
+    controller.finish_run("run-1")
+    assert controller.enqueue(SpeechSegment("seg-3", "Новый ответ.", "run-1"))
+
+    first = controller._queue.get_nowait()
+    second = controller._queue.get_nowait()
+    third = controller._queue.get_nowait()
+    assert first.request.text == "Спокойно."
+    assert first.request.style_id == "calm"
+    assert first.request.emoji == "😌"
+    assert second.request.style_id == "calm"
+    assert third.request.style_id == "neutral"
 
 
 def test_speech_playback_controller_skips_emoji_only_segment():
@@ -391,7 +437,7 @@ def test_speaker_agent_streaming_stale_final_history_queues_missing_tail():
         queued = []
         while not agent._playback._queue.empty():
             item = agent._playback._queue.get_nowait()
-            queued.append(item.text)
+            queued.append(item.request.text)
             agent._playback._queue.task_done()
 
         assert gateway.history_calls == 1

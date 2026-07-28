@@ -432,7 +432,10 @@ def _listener_output_route_targets() -> list[SinkInputVolume]:
             application_id="speaker",
         )
     ]
-    for application_name in sorted(_listener_python_application_names()):
+    # WirePlumber metadata keys are case-sensitive.  ALSA's PipeWire plugin
+    # publishes the mixed-case application name below even though matching
+    # live sink-input properties is deliberately case-insensitive.
+    for application_name in sorted(_listener_python_route_application_names()):
         targets.append(
             SinkInputVolume(
                 sink_input_id=0,
@@ -1029,17 +1032,31 @@ def _is_speaker_sink_input(properties: dict[object, object]) -> bool:
 
 
 def _listener_python_application_names() -> set[str]:
+    return {
+        f"pipewire alsa [{executable_name}]".casefold()
+        for executable_name in _listener_python_executable_names()
+    }
+
+
+def _listener_python_route_application_names() -> set[str]:
+    return {
+        f"PipeWire ALSA [{executable_name}]"
+        for executable_name in _listener_python_executable_names()
+    }
+
+
+def _listener_python_executable_names() -> set[str]:
     executable_names = {
         os.path.basename(sys.executable).strip().casefold(),
         os.path.basename(os.path.realpath(sys.executable)).strip().casefold(),
     }
-    values = set()
+    values: set[str] = set()
     for executable_name in executable_names:
         if not executable_name:
             continue
-        values.add(f"pipewire alsa [{executable_name}]")
+        values.add(executable_name)
         if executable_name.startswith("python") and "." in executable_name:
-            values.add(f"pipewire alsa [{executable_name.split('.', 1)[0]}]")
+            values.add(executable_name.split(".", 1)[0])
     return values
 
 

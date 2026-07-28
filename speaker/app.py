@@ -9,7 +9,8 @@ from .emoji import EmojiDisplayClient, extract_emoji_for_speech
 from .events import ChatSpeechRouter, SpeechSegment
 from .gateway import GatewayClient, GatewayError
 from .messages import ExtractedMessage, MessageDeduper, extract_latest_assistant_text
-from .tts import PiperSpeechEngine, SpeechEngine
+from .style import EmojiStyleResolver
+from .tts import SpeechEngine, SpeechRequest, create_speech_engine
 
 log = logging.getLogger(__name__)
 
@@ -35,14 +36,20 @@ class SpeakerService:
 
     async def run_until_disconnect(self) -> None:
         gateway = self.gateway or GatewayClient(self.config.gateway)
-        speech = self.speech or PiperSpeechEngine(self.config.piper, self.config.playback)
+        speech = self.speech or create_speech_engine(self.config)
+        style_resolver = EmojiStyleResolver(self.config.tts.style)
         emoji_display = EmojiDisplayClient(self.config.emoji_display)
         deduper = MessageDeduper()
         router = ChatSpeechRouter(self.config.gateway, self.config.speaker.streaming)
         queue: asyncio.Queue[SpeechSegment] = asyncio.Queue(maxsize=self.config.speaker.queue_size)
-        worker = asyncio.create_task(self._speech_worker(queue, speech, emoji_display))
+        worker = asyncio.create_task(
+            self._speech_worker(queue, speech, emoji_display, style_resolver)
+        )
 
         try:
+            start = getattr(speech, "start", None)
+            if callable(start):
+                await start()
             await gateway.connect()
             log.info("Connected to OpenClaw Gateway")
             if not self.config.speaker.speak_existing_on_start:
@@ -57,6 +64,9 @@ class SpeakerService:
                 await worker
             except asyncio.CancelledError:
                 pass
+            close = getattr(speech, "close", None)
+            if callable(close):
+                await close()
 
     async def _mark_current_message_seen(self, gateway: GatewayClient, deduper: MessageDeduper) -> None:
         try:
@@ -239,6 +249,7 @@ class SpeakerService:
         queue: asyncio.Queue[SpeechSegment],
         speech: SpeechEngine,
         emoji_display: EmojiDisplayClient,
+        style_resolver: EmojiStyleResolver,
     ) -> None:
         while True:
             segment = await queue.get()
@@ -264,10 +275,26 @@ class SpeakerService:
                     )
                     continue
                 log.info("Speaking assistant reply %s", segment.identifier)
-                await speech.speak(parsed.speech_text)
+                style = style_resolver.resolve(
+                    segment.text,
+                    parsed.tokens,
+                    run_id=segment.run_id,
+                )
+                await speech.speak(
+                    SpeechRequest(
+                        text=parsed.speech_text,
+                        run_id=segment.run_id,
+                        segment_id=segment.identifier,
+                        style_id=style.style_id,
+                        instruction=style.instruction,
+                        emoji=style.emoji,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 - speech errors should not stop listening
                 log.warning("Speech failed for %s: %s", segment.identifier, exc)
             finally:
+                if segment.final:
+                    style_resolver.discard(segment.run_id)
                 queue.task_done()
 
 

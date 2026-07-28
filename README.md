@@ -278,6 +278,18 @@ EOF
 Run the command from the Listener repository root so `LISTENER_HOME` is written
 as the current project path.
 
+To let OpenClaw control neural TTS style with leading emoji, append the bundled
+prompt fragment to its workspace instructions once:
+
+```bash
+OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
+sed -n '1,$p' openclaw/prompts/listener-tts-style.md >> "$OPENCLAW_WORKSPACE/AGENTS.md"
+```
+
+Listener uses only an allowlist: arbitrary emoji names never become model
+instructions. A leading emoji changes the style for the current reply; a
+trailing emoji remains display-only.
+
 Listener auto-discovers OpenClaw's assistant name from workspace `IDENTITY.md`
 using `Name:` or `Имя:`. Full guide: [docs/openclaw.md](docs/openclaw.md).
 
@@ -286,7 +298,12 @@ using `Name:` or `Имя:`. Full guide: [docs/openclaw.md](docs/openclaw.md).
 The integrated Speaker subscribes to OpenClaw Gateway chat events and voices
 assistant replies locally. It is intentionally independent from the input path:
 OpenClaw generates text, Listener receives the stream, splits it into speakable
-segments, synthesizes them with Piper, and plays them in order.
+segments, synthesizes them with Piper, VoxCPM2, or CosyVoice3, and plays them in
+order. Neural backends run in isolated persistent environments, stream PCM
+directly, and fall back to Piper after startup or generation failures. The
+checked-in default remains Piper. See [docs/neural-tts.md](docs/neural-tts.md)
+for separate environment installation, model downloads, resource overhead,
+configuration, emoji styling and smoke tests.
 
 On Linux the default playback path prefers `paplay` when it is available. That
 keeps the Speaker stream visible to PulseAudio/PipeWire with stable
@@ -492,6 +509,8 @@ Expected result: the full test suite passes.
 - [docs/audio.md](docs/audio.md) - audio processing, VAD and AEC.
 - [docs/stt.md](docs/stt.md) - Whisper STT and SpeechGate.
 - [docs/openclaw.md](docs/openclaw.md) - OpenClaw forwarding and control skill.
+- [docs/neural-tts.md](docs/neural-tts.md) - VoxCPM2/CosyVoice3 installation,
+  sizing and style instructions.
 - [docs/service.md](docs/service.md) - running Listener as a `systemd --user` service.
 - [docs/release.md](docs/release.md) - release checklist.
 

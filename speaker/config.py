@@ -14,6 +14,7 @@ LEGACY_PIPER_DIR = PROJECT_ROOT / "piper"
 DEFAULT_PLAYER_COMMAND = "/usr/bin/paplay"
 SPEAKER_MODES = {"streaming", "final"}
 TTS_MODES = {"persistent", "subprocess"}
+TTS_BACKENDS = {"piper", "voxcpm2", "cosyvoice3"}
 
 
 def default_piper_command() -> str:
@@ -58,6 +59,62 @@ class PiperConfig:
     sentence_silence: float = 0.25
     timeout_s: float = 120.0
     extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class SpeechStyleConfig:
+    enabled: bool = True
+    inherit_within_run: bool = True
+    leading_emoji_only: bool = True
+    default_style: str = "neutral"
+
+
+@dataclass(slots=True)
+class TTSConfig:
+    backend: str = "piper"
+    fallback_backend: str = "piper"
+    startup_timeout_s: float = 45.0
+    generation_timeout_s: float = 120.0
+    cancel_timeout_s: float = 1.0
+    max_consecutive_errors: int = 3
+    style: SpeechStyleConfig = field(default_factory=SpeechStyleConfig)
+
+
+@dataclass(slots=True)
+class VoxCPM2Config:
+    python: str = "/home/re/src/TTS test/VoxCPM2/.mamba/envs/.venv/bin/python"
+    model_path: str = "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2"
+    reference_wav_path: str = "/home/re/src/TTS test/VoxCPM2/Reference/Nata.wav"
+    prompt_text: str = ""
+    device: str = "cuda"
+    optimize: bool = True
+    load_denoiser: bool = False
+    local_files_only: bool = True
+    seed: int = 42
+    cfg_value: float = 2.0
+    inference_timesteps: int = 10
+    warmup: bool = True
+    compile_threads: int = 4
+
+
+@dataclass(slots=True)
+class CosyVoice3Config:
+    python: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/.mamba/envs/.venv/bin/python"
+    repo_path: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice"
+    model_path: str = (
+        "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice/"
+        "pretrained_models/Fun-CosyVoice3-0.5B"
+    )
+    prompt_wav_path: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/Reference/Nata.wav"
+    prompt_text: str = ""
+    device: str = "cuda"
+    local_files_only: bool = True
+    fp16: bool = True
+    load_trt: bool = False
+    wetext_path: str = "/home/re/.cache/modelscope/hub/pengzhendong/wetext"
+    warmup: bool = True
+    speed: float = 1.0
+    enable_vocal_events: bool = False
 
 
 @dataclass(slots=True)
@@ -115,7 +172,10 @@ class EmojiDisplayConfig:
 class SpeakerConfig:
     enabled: bool = False
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
+    tts: TTSConfig = field(default_factory=TTSConfig)
     piper: PiperConfig = field(default_factory=PiperConfig)
+    voxcpm2: VoxCPM2Config = field(default_factory=VoxCPM2Config)
+    cosyvoice3: CosyVoice3Config = field(default_factory=CosyVoice3Config)
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
     speaker: RuntimeConfig = field(default_factory=RuntimeConfig)
     emoji_display: EmojiDisplayConfig = field(default_factory=EmojiDisplayConfig)
@@ -155,6 +215,21 @@ class SpeakerConfig:
     def merge_dict(self, data: dict[str, Any]) -> "SpeakerConfig":
         if not isinstance(data, dict) or not data:
             return self
+        nested_speaker = data.get("speaker")
+        component_keys = {
+            "enabled",
+            "gateway",
+            "tts",
+            "piper",
+            "voxcpm2",
+            "cosyvoice3",
+            "playback",
+            "emoji_display",
+        }
+        if isinstance(nested_speaker, dict) and component_keys.intersection(nested_speaker):
+            # Accept the integrated Listener config shape as well as the flat
+            # standalone speaker.json shape.
+            data = nested_speaker
         runtime_data = data.get("speaker")
         if not isinstance(runtime_data, dict):
             runtime_keys = set(self.speaker.__dataclass_fields__.keys())
@@ -163,7 +238,10 @@ class SpeakerConfig:
             self,
             enabled=_parse_bool_value(data.get("enabled"), self.enabled),
             gateway=_merge_dataclass(self.gateway, data.get("gateway")),
+            tts=_merge_dataclass(self.tts, data.get("tts")),
             piper=_merge_dataclass(self.piper, data.get("piper")),
+            voxcpm2=_merge_dataclass(self.voxcpm2, data.get("voxcpm2")),
+            cosyvoice3=_merge_dataclass(self.cosyvoice3, data.get("cosyvoice3")),
             playback=_merge_dataclass(self.playback, data.get("playback")),
             speaker=_merge_dataclass(self.speaker, runtime_data),
             emoji_display=_merge_dataclass(self.emoji_display, data.get("emoji_display")),
@@ -171,7 +249,10 @@ class SpeakerConfig:
 
     def apply_env(self) -> "SpeakerConfig":
         gateway = self.gateway
+        tts = self.tts
         piper = self.piper
+        voxcpm2 = self.voxcpm2
+        cosyvoice3 = self.cosyvoice3
         playback = self.playback
         speaker = self.speaker
         emoji_display = self.emoji_display
@@ -195,12 +276,28 @@ class SpeakerConfig:
             speaker = replace(speaker, mode=mode)
         if tts_mode := os.getenv("SPEAKER_TTS_MODE"):
             speaker = replace(speaker, tts_mode=tts_mode)
+        if tts_backend := os.getenv("SPEAKER_TTS_BACKEND"):
+            tts = replace(tts, backend=tts_backend)
+        if fallback_backend := os.getenv("SPEAKER_TTS_FALLBACK_BACKEND"):
+            tts = replace(tts, fallback_backend=fallback_backend)
         if command := os.getenv("SPEAKER_PIPER_COMMAND"):
             piper = replace(piper, command=command)
         if model := os.getenv("SPEAKER_PIPER_MODEL"):
             piper = replace(piper, model=model)
         if volume := os.getenv("SPEAKER_PIPER_VOLUME"):
             piper = replace(piper, volume=float(volume))
+        if python := os.getenv("SPEAKER_VOXCPM2_PYTHON"):
+            voxcpm2 = replace(voxcpm2, python=python)
+        if model := os.getenv("SPEAKER_VOXCPM2_MODEL"):
+            voxcpm2 = replace(voxcpm2, model_path=model)
+        if reference := os.getenv("SPEAKER_VOXCPM2_REFERENCE_WAV"):
+            voxcpm2 = replace(voxcpm2, reference_wav_path=reference)
+        if python := os.getenv("SPEAKER_COSYVOICE3_PYTHON"):
+            cosyvoice3 = replace(cosyvoice3, python=python)
+        if model := os.getenv("SPEAKER_COSYVOICE3_MODEL"):
+            cosyvoice3 = replace(cosyvoice3, model_path=model)
+        if reference := os.getenv("SPEAKER_COSYVOICE3_PROMPT_WAV"):
+            cosyvoice3 = replace(cosyvoice3, prompt_wav_path=reference)
         if player := os.getenv("SPEAKER_PLAYER_COMMAND"):
             playback = replace(playback, command=player)
         if backend := os.getenv("SPEAKER_PLAYBACK_BACKEND"):
@@ -257,7 +354,10 @@ class SpeakerConfig:
             self,
             enabled=enabled_value,
             gateway=gateway,
+            tts=_normalize_tts_config(tts),
             piper=piper,
+            voxcpm2=_normalize_voxcpm2_config(voxcpm2),
+            cosyvoice3=_normalize_cosyvoice3_config(cosyvoice3),
             playback=_normalize_playback_config(playback),
             speaker=_normalize_runtime_config(speaker),
             emoji_display=_normalize_emoji_display_config(emoji_display),
@@ -310,6 +410,37 @@ def _merge_dataclass(current: Any, raw: Any) -> Any:
             values["ducking"] = ducking
     if isinstance(current, RuntimeConfig) and "streaming" in values:
         values["streaming"] = _merge_dataclass(current.streaming, values["streaming"])
+    if isinstance(current, TTSConfig) and "style" in values:
+        values["style"] = _merge_dataclass(current.style, values["style"])
+    if isinstance(current, SpeechStyleConfig):
+        for key in ("enabled", "inherit_within_run", "leading_emoji_only"):
+            if key in values:
+                values[key] = _parse_bool_value(values[key], getattr(current, key))
+    if isinstance(current, TTSConfig):
+        for key in ("startup_timeout_s", "generation_timeout_s", "cancel_timeout_s"):
+            if key in values:
+                values[key] = float(values[key])
+        if "max_consecutive_errors" in values:
+            values["max_consecutive_errors"] = int(values["max_consecutive_errors"])
+    if isinstance(current, (VoxCPM2Config, CosyVoice3Config)):
+        for key in ("local_files_only",):
+            if key in values:
+                values[key] = _parse_bool_value(values[key], getattr(current, key))
+    if isinstance(current, VoxCPM2Config):
+        for key in ("optimize", "load_denoiser", "warmup"):
+            if key in values:
+                values[key] = _parse_bool_value(values[key], getattr(current, key))
+        for key in ("seed", "inference_timesteps", "compile_threads"):
+            if key in values:
+                values[key] = int(values[key])
+        if "cfg_value" in values:
+            values["cfg_value"] = float(values["cfg_value"])
+    if isinstance(current, CosyVoice3Config):
+        for key in ("fp16", "load_trt", "warmup", "enable_vocal_events"):
+            if key in values:
+                values[key] = _parse_bool_value(values[key], getattr(current, key))
+        if "speed" in values:
+            values["speed"] = float(values["speed"])
     if isinstance(current, EmojiDisplayConfig):
         if "enabled" in values:
             values["enabled"] = _parse_bool_value(values["enabled"], current.enabled)
@@ -327,7 +458,80 @@ def _merge_dataclass(current: Any, raw: Any) -> Any:
         return _normalize_playback_config(updated)
     if isinstance(updated, EmojiDisplayConfig):
         return _normalize_emoji_display_config(updated)
+    if isinstance(updated, TTSConfig):
+        return _normalize_tts_config(updated)
+    if isinstance(updated, VoxCPM2Config):
+        return _normalize_voxcpm2_config(updated)
+    if isinstance(updated, CosyVoice3Config):
+        return _normalize_cosyvoice3_config(updated)
     return _normalize_runtime_config(updated)
+
+
+def _normalize_tts_config(config: TTSConfig) -> TTSConfig:
+    backend = str(config.backend or "piper").strip().casefold()
+    fallback_backend = str(config.fallback_backend or "piper").strip().casefold()
+    if backend not in TTS_BACKENDS:
+        raise ValueError(f"speaker.tts.backend must be one of: {', '.join(sorted(TTS_BACKENDS))}")
+    if fallback_backend not in TTS_BACKENDS:
+        raise ValueError(
+            f"speaker.tts.fallback_backend must be one of: {', '.join(sorted(TTS_BACKENDS))}"
+        )
+    style = config.style
+    default_style = str(style.default_style or "neutral").strip().casefold() or "neutral"
+    return replace(
+        config,
+        backend=backend,
+        fallback_backend=fallback_backend,
+        startup_timeout_s=max(1.0, float(config.startup_timeout_s)),
+        generation_timeout_s=max(1.0, float(config.generation_timeout_s)),
+        cancel_timeout_s=max(0.05, float(config.cancel_timeout_s)),
+        max_consecutive_errors=max(1, int(config.max_consecutive_errors)),
+        style=replace(
+            style,
+            enabled=bool(style.enabled),
+            inherit_within_run=bool(style.inherit_within_run),
+            leading_emoji_only=bool(style.leading_emoji_only),
+            default_style=default_style,
+        ),
+    )
+
+
+def _normalize_voxcpm2_config(config: VoxCPM2Config) -> VoxCPM2Config:
+    return replace(
+        config,
+        python=str(config.python or "").strip(),
+        model_path=str(config.model_path or "").strip(),
+        reference_wav_path=str(config.reference_wav_path or "").strip(),
+        prompt_text=str(config.prompt_text or "").strip(),
+        device=str(config.device or "cuda").strip().casefold() or "cuda",
+        optimize=bool(config.optimize),
+        load_denoiser=bool(config.load_denoiser),
+        local_files_only=bool(config.local_files_only),
+        seed=int(config.seed),
+        cfg_value=max(0.1, min(10.0, float(config.cfg_value))),
+        inference_timesteps=max(1, min(100, int(config.inference_timesteps))),
+        warmup=bool(config.warmup),
+        compile_threads=max(1, int(config.compile_threads)),
+    )
+
+
+def _normalize_cosyvoice3_config(config: CosyVoice3Config) -> CosyVoice3Config:
+    return replace(
+        config,
+        python=str(config.python or "").strip(),
+        repo_path=str(config.repo_path or "").strip(),
+        model_path=str(config.model_path or "").strip(),
+        prompt_wav_path=str(config.prompt_wav_path or "").strip(),
+        prompt_text=str(config.prompt_text or "").strip(),
+        device=str(config.device or "cuda").strip().casefold() or "cuda",
+        local_files_only=bool(config.local_files_only),
+        fp16=bool(config.fp16),
+        load_trt=bool(config.load_trt),
+        wetext_path=str(config.wetext_path or "").strip(),
+        warmup=bool(config.warmup),
+        speed=max(0.5, min(2.0, float(config.speed))),
+        enable_vocal_events=bool(config.enable_vocal_events),
+    )
 
 
 def _normalize_runtime_config(config: Any) -> Any:
@@ -420,7 +624,9 @@ def _normalize_gateway_url(value: str) -> str:
 
 def _read_json_object(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # Listener's long-lived project config may carry a UTF-8 BOM (the
+        # checked-in sample does).  utf-8-sig accepts both BOM and plain UTF-8.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError as exc:

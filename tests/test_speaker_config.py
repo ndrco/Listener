@@ -8,6 +8,58 @@ from speaker.config import SpeakerConfig, default_piper_model
 
 
 class ConfigTests(unittest.TestCase):
+    def test_missing_tts_section_keeps_piper_backend(self):
+        config = SpeakerConfig().merge_dict({"enabled": True})
+
+        self.assertEqual(config.tts.backend, "piper")
+
+    def test_integrated_listener_speaker_section_is_supported(self):
+        config = SpeakerConfig().merge_dict(
+            {
+                "version": "1.0",
+                "speaker": {
+                    "enabled": True,
+                    "mode": "streaming",
+                    "tts": {"backend": "cosyvoice3"},
+                    "cosyvoice3": {"model_path": "/tmp/cosy"},
+                },
+            }
+        )
+
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.speaker.mode, "streaming")
+        self.assertEqual(config.tts.backend, "cosyvoice3")
+        self.assertEqual(config.cosyvoice3.model_path, "/tmp/cosy")
+
+    def test_neural_tts_sections_are_merged_and_normalized(self):
+        config = SpeakerConfig().merge_dict(
+            {
+                "tts": {
+                    "backend": "VOXCPM2",
+                    "startup_timeout_s": 0,
+                    "style": {"leading_emoji_only": "false"},
+                },
+                "voxcpm2": {
+                    "python": " /tmp/vox-python ",
+                    "model_path": " /tmp/vox-model ",
+                    "optimize": "false",
+                    "load_denoiser": "true",
+                },
+            }
+        )
+
+        self.assertEqual(config.tts.backend, "voxcpm2")
+        self.assertEqual(config.tts.startup_timeout_s, 1.0)
+        self.assertFalse(config.tts.style.leading_emoji_only)
+        self.assertEqual(config.voxcpm2.python, "/tmp/vox-python")
+        self.assertEqual(config.voxcpm2.model_path, "/tmp/vox-model")
+        self.assertFalse(config.voxcpm2.optimize)
+        self.assertTrue(config.voxcpm2.load_denoiser)
+
+    def test_rejects_unknown_tts_backend(self):
+        with self.assertRaises(ValueError):
+            SpeakerConfig().merge_dict({"tts": {"backend": "unknown"}})
+
     def test_loads_project_config_by_default(self):
         with TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -15,6 +67,18 @@ class ConfigTests(unittest.TestCase):
 
             with patch("speaker.config.DEFAULT_CONFIG_PATH", config_path):
                 config = SpeakerConfig.load()
+
+        self.assertEqual(config.speaker.mode, "final")
+
+    def test_loads_config_with_utf8_bom(self):
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                '\ufeff{"speaker": {"mode": "final"}}',
+                encoding="utf-8",
+            )
+
+            config = SpeakerConfig.load(str(config_path))
 
         self.assertEqual(config.speaker.mode, "final")
 

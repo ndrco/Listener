@@ -262,6 +262,19 @@ spoken replies, use listener-speaker-off or `listener-control speaker off`.
 EOF
 ```
 
+If Listener uses VoxCPM2 or CosyVoice3, also install the response-style
+convention:
+
+```bash
+OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
+sed -n '1,$p' openclaw/prompts/listener-tts-style.md >> "$OPENCLAW_WORKSPACE/AGENTS.md"
+```
+
+The leading position is intentional: Listener queues completed sentences while
+OpenClaw is still streaming, so a trailing emoji arrives too late to style that
+sentence. Styles are selected by an allowlist and persist only inside the same
+OpenClaw `runId`; abort, error, finalization, and barge-in clear run state.
+
 ## Manual `listenerctl` Commands
 
 ```bash

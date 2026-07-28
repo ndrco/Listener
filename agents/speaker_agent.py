@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 from audio.ducking import PulseAudioDucker
@@ -13,13 +14,21 @@ from core.config import cfg
 from core import perf
 from core.runtime_state import RuntimeStateStore
 from speaker.config import SpeakerConfig
-from speaker.emoji import EmojiDisplayClient, extract_emoji_for_speech
+from speaker.emoji import EmojiDisplayClient, EmojiToken, extract_emoji_for_speech
 from speaker.events import ChatSpeechRouter, SpeechSegment
 from speaker.gateway import GatewayClient, GatewayError
 from speaker.messages import ExtractedMessage, MessageDeduper, extract_latest_assistant_text
-from speaker.tts import PiperSpeechEngine, SpeechEngine
+from speaker.style import EmojiStyleResolver
+from speaker.tts import SpeechEngine, SpeechRequest, create_speech_engine
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _PlaybackItem:
+    segment: SpeechSegment
+    request: SpeechRequest
+    emoji_tokens: tuple[EmojiToken, ...]
 
 
 class SpeechPlaybackController:
@@ -33,13 +42,15 @@ class SpeechPlaybackController:
         enabled: bool = True,
         emoji_display: EmojiDisplayClient | None = None,
         ducking_config: object | None = None,
+        style_resolver: EmojiStyleResolver | None = None,
     ) -> None:
         self._speech = speech
         self._emoji_display = emoji_display
         self._ducking_config = ducking_config
+        self._style_resolver = style_resolver or EmojiStyleResolver()
         self._run_ducker: PulseAudioDucker | None = None
         self._ducked_run_id: str | None = None
-        self._queue: asyncio.Queue[SpeechSegment | None] = asyncio.Queue(
+        self._queue: asyncio.Queue[_PlaybackItem | None] = asyncio.Queue(
             maxsize=max(1, int(queue_size or 1))
         )
         self._enabled = bool(enabled)
@@ -77,6 +88,8 @@ class SpeechPlaybackController:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await _close_speech_engine(self._speech)
+        self._style_resolver.clear()
 
     async def set_enabled(self, enabled: bool, *, reason: str = "") -> dict:
         self._enabled = bool(enabled)
@@ -95,21 +108,46 @@ class SpeechPlaybackController:
                 segment.run_id,
             )
             return False
+        parsed = extract_emoji_for_speech(segment.text)
+        style = self._style_resolver.resolve(
+            segment.text,
+            parsed.tokens,
+            run_id=segment.run_id,
+        )
+        request = SpeechRequest(
+            text=parsed.speech_text,
+            run_id=segment.run_id,
+            segment_id=segment.identifier,
+            style_id=style.style_id,
+            instruction=style.instruction,
+            emoji=style.emoji,
+        )
         try:
-            self._queue.put_nowait(segment)
+            self._queue.put_nowait(_PlaybackItem(segment, request, parsed.tokens))
             return True
         except asyncio.QueueFull:
             log.warning("SpeakerAgent: speech queue is full; dropping %s", segment.identifier)
             return False
 
+    def finish_run(self, run_id: str) -> None:
+        """Forget inherited style after all requests for a run have been queued."""
+        self._style_resolver.discard(run_id)
+
     async def interrupt(self, *, reason: str, run_id: str | None = None) -> int:
         self._last_interrupt_reason = str(reason or "")
         if run_id is None:
             self._interrupt_all_generation += 1
+            self._style_resolver.clear()
         else:
             self._remember_interrupted_run(run_id)
-        dropped = self._drain_queue(run_id=run_id)
+            self._style_resolver.discard(run_id)
         current = self._current_segment
+        dropped, drained_run_ids = self._drain_queue(run_id=run_id)
+        if run_id is None:
+            if current is not None:
+                self._remember_interrupted_run(current.run_id)
+            for drained_run_id in drained_run_ids:
+                self._remember_interrupted_run(drained_run_id)
         task = self._current_task
         current_affected = current is not None and (
             run_id is None or current.run_id == run_id
@@ -122,8 +160,10 @@ class SpeechPlaybackController:
         )
         if should_cancel_current:
             dropped += 1
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            await _interrupt_speech_engine(self._speech, run_id=run_id)
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         elif current_affected:
             dropped += 1
@@ -150,11 +190,14 @@ class SpeechPlaybackController:
             "emoji_display": self._emoji_display.get_status()
             if self._emoji_display is not None
             else None,
+            "style": self._style_resolver.get_status(),
+            "tts": _speech_engine_status(self._speech),
         }
 
-    def _drain_queue(self, *, run_id: str | None) -> int:
+    def _drain_queue(self, *, run_id: str | None) -> tuple[int, set[str]]:
         dropped = 0
-        kept: list[SpeechSegment | None] = []
+        dropped_run_ids: set[str] = set()
+        kept: list[_PlaybackItem | None] = []
         while True:
             try:
                 item = self._queue.get_nowait()
@@ -164,22 +207,26 @@ class SpeechPlaybackController:
                 kept.append(item)
                 self._queue.task_done()
                 continue
-            if run_id is None or item.run_id == run_id:
+            if run_id is None or item.segment.run_id == run_id:
                 dropped += 1
+                if item.segment.run_id:
+                    dropped_run_ids.add(item.segment.run_id)
                 self._queue.task_done()
                 continue
             kept.append(item)
             self._queue.task_done()
         for item in kept:
             self._queue.put_nowait(item)
-        return dropped
+        return dropped, dropped_run_ids
 
     async def _worker(self) -> None:
         while True:
-            segment = await self._queue.get()
-            if segment is None:
+            item = await self._queue.get()
+            if item is None:
                 self._queue.task_done()
                 break
+            segment = item.segment
+            request = item.request
             if not self._accepts_segments():
                 self._queue.task_done()
                 continue
@@ -194,17 +241,16 @@ class SpeechPlaybackController:
                 if self._is_segment_interrupted(segment, interrupt_generation):
                     await self._skip_interrupted_segment(segment)
                     continue
-            parsed = extract_emoji_for_speech(segment.text)
-            if parsed.tokens:
+            if item.emoji_tokens:
                 log.debug(
                     "SpeakerAgent: extracted %d emoji(s) from segment id=%s symbols=%s",
-                    len(parsed.tokens),
+                    len(item.emoji_tokens),
                     segment.identifier,
-                    "".join(token.symbol for token in parsed.tokens),
+                    "".join(token.symbol for token in item.emoji_tokens),
                 )
                 if self._emoji_display is not None:
                     await self._emoji_display.show_tokens(
-                        parsed.tokens,
+                        item.emoji_tokens,
                         run_id=segment.run_id,
                         segment_id=segment.identifier,
                     )
@@ -215,7 +261,7 @@ class SpeechPlaybackController:
                 self._queue.task_done()
                 self._current_segment = None
                 continue
-            if not parsed.speech_text:
+            if not request.text:
                 log.info(
                     "SpeakerAgent: skipped speech for emoji-only segment id=%s run_id=%s",
                     segment.identifier,
@@ -227,7 +273,7 @@ class SpeechPlaybackController:
                     await self._restore_run_ducking()
                 continue
             self._current_task = asyncio.create_task(
-                self._speech.speak(parsed.speech_text),
+                self._speech.speak(request),
                 name=f"Speaker.speak.{segment.identifier}",
             )
             try:
@@ -238,7 +284,8 @@ class SpeechPlaybackController:
                     "segment_start",
                     run_id=segment.run_id,
                     segment_id=segment.identifier,
-                    text=perf.text_preview(parsed.speech_text),
+                    style_id=request.style_id,
+                    text=perf.text_preview(request.text),
                 )
                 await self._current_task
                 perf.emit(
@@ -349,12 +396,7 @@ class SpeakerAgent:
         self._gateway_factory = gateway_factory or (lambda gateway_cfg: GatewayClient(gateway_cfg))
         tts_mode = str(getattr(self._config.speaker, "tts_mode", "persistent") or "persistent")
         persistent_tts = tts_mode == "persistent"
-        self._speech = speech or PiperSpeechEngine(
-            self._config.piper,
-            self._config.playback,
-            prefetch=persistent_tts,
-            manage_ducking=not persistent_tts,
-        )
+        self._speech = speech or create_speech_engine(self._config)
         self._emoji_display = EmojiDisplayClient(self._config.emoji_display)
         self._playback = SpeechPlaybackController(
             speech=self._speech,
@@ -362,6 +404,7 @@ class SpeakerAgent:
             enabled=bool(self._config.enabled),
             emoji_display=self._emoji_display,
             ducking_config=self._config.playback.ducking if persistent_tts else None,
+            style_resolver=EmojiStyleResolver(self._config.tts.style),
         )
         self._running = False
         self._gateway_task: asyncio.Task[None] | None = None
@@ -378,6 +421,8 @@ class SpeakerAgent:
             return
         self._running = True
         await self._playback.start()
+        if self._config.enabled:
+            await _start_speech_engine(self._speech)
         if self._should_listen_to_gateway():
             self._ensure_gateway_task()
         log.info("SpeakerAgent: started (enabled=%s)", self._config.enabled)
@@ -406,6 +451,7 @@ class SpeakerAgent:
         target = bool(enabled)
         self._config.enabled = target
         if target:
+            await _start_speech_engine(self._speech)
             await self._playback.set_enabled(True, reason=reason)
             if self._running:
                 self._ensure_gateway_task()
@@ -429,6 +475,7 @@ class SpeakerAgent:
             "connected": self._connected,
             "mode": self._config.speaker.mode,
             "tts_mode": self._config.speaker.tts_mode,
+            "tts_backend": self._config.tts.backend,
             "session_key": self._config.gateway.session_key,
             "gateway_url": self._config.gateway.url,
             "last_error": self._last_error or None,
@@ -581,7 +628,9 @@ class SpeakerAgent:
         if message is None or deduper.seen(message):
             return
         deduper.mark_seen(message)
-        self._enqueue(_message_to_segment(message, str(payload.get("runId") or "final"), final=True))
+        run_id = str(payload.get("runId") or "final")
+        self._enqueue(_message_to_segment(message, run_id, final=True))
+        self._playback.finish_run(run_id)
 
     async def _handle_streaming_event(
         self,
@@ -600,6 +649,8 @@ class SpeakerAgent:
         for segment in result.segments:
             self._enqueue(segment)
         if not result.needs_history:
+            if state == "final":
+                self._playback.finish_run(run_id)
             return
         log.info(
             "SpeakerAgent: final event needs history check run_id=%s known_segments=%d",
@@ -614,15 +665,18 @@ class SpeakerAgent:
             )
         except GatewayError as exc:
             router.discard(run_id)
+            self._playback.finish_run(run_id)
             log.warning("SpeakerAgent: unable to load chat history: %s", exc)
             return
         if message is None:
             router.discard(run_id)
+            self._playback.finish_run(run_id)
             log.debug("SpeakerAgent: history check found no assistant message run_id=%s", run_id)
             return
         expected_text = router.emitted_text(run_id)
         if deduper.seen(message) and not expected_text:
             router.discard(run_id)
+            self._playback.finish_run(run_id)
             log.debug(
                 "SpeakerAgent: history check skipped seen assistant message run_id=%s message=%s",
                 run_id,
@@ -631,6 +685,7 @@ class SpeakerAgent:
             return
         history_result = router.route_final_text(run_id, message.text)
         if deduper.seen(message) and not history_result.segments:
+            self._playback.finish_run(run_id)
             log.debug(
                 "SpeakerAgent: history check skipped seen assistant message run_id=%s message=%s",
                 run_id,
@@ -646,6 +701,7 @@ class SpeakerAgent:
         )
         for segment in history_result.segments:
             self._enqueue(segment)
+        self._playback.finish_run(run_id)
 
     async def _load_final_history_message(
         self,
@@ -723,6 +779,46 @@ def _preview(text: str, *, limit: int = 160) -> str:
     if len(value) <= limit:
         return value
     return f"{value[: limit - 1]}..."
+
+
+async def _interrupt_speech_engine(speech: SpeechEngine, *, run_id: str | None) -> None:
+    interrupt = getattr(speech, "interrupt", None)
+    if not callable(interrupt):
+        return
+    try:
+        await interrupt(run_id=run_id)
+    except TypeError:
+        await interrupt()
+    except Exception as exc:  # noqa: BLE001 - interruption remains best-effort
+        log.warning("SpeakerAgent: TTS interrupt failed: %s", exc)
+
+
+async def _start_speech_engine(speech: SpeechEngine) -> None:
+    start = getattr(speech, "start", None)
+    if not callable(start):
+        return
+    await start()
+
+
+async def _close_speech_engine(speech: SpeechEngine) -> None:
+    close = getattr(speech, "close", None)
+    if not callable(close):
+        return
+    try:
+        await close()
+    except Exception as exc:  # noqa: BLE001 - shutdown remains best-effort
+        log.warning("SpeakerAgent: TTS close failed: %s", exc)
+
+
+def _speech_engine_status(speech: SpeechEngine) -> dict | None:
+    get_status = getattr(speech, "get_status", None)
+    if not callable(get_status):
+        return None
+    try:
+        status = get_status()
+    except Exception as exc:  # noqa: BLE001 - status must not break control API
+        return {"last_error": str(exc)}
+    return status if isinstance(status, dict) else None
 
 
 __all__ = ["SpeakerAgent", "SpeechPlaybackController"]

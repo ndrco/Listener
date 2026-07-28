@@ -202,3 +202,15 @@ def test_whisper_engine_loads_blacklist_sections(tmp_path):
 
     assert engine._blacklist_phrases == {"спасибо"}  # pylint: disable=protected-access
     assert engine._blacklist_words == {"1988"}  # pylint: disable=protected-access
+
+
+def test_project_blacklist_blocks_thanks_for_attention_hallucination():
+    engine = WhisperEngine(
+        WhisperSttCfg(
+            enabled=False,
+            blacklist_path=str(ROOT / "config" / "blacklist.txt"),
+        )
+    )
+    engine._load_blacklist()  # pylint: disable=protected-access
+
+    assert engine._apply_blacklist("Спасибо за внимание!") is None  # pylint: disable=protected-access

@@ -81,6 +81,11 @@ Speaker for the first run:
 }
 ```
 
+For the optional VoxCPM2 or Fun-CosyVoice3-0.5B backends, do not install their
+dependencies into Listener's `.venv`. Each backend needs its own persistent
+worker environment. The complete, tested installation and sizing guide is
+[docs/neural-tts.md](docs/neural-tts.md).
+
 If you want a self-contained Listener setup, use the Listener virtualenv as the
 Piper entrypoint:
 
