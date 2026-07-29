@@ -1,171 +1,167 @@
-# Whisper STT движок
+# Whisper STT engine
 
-Модуль `audio.stt.whisper_engine.WhisperEngine` инкапсулирует загрузку и работу с
-моделями [Whisper](https://github.com/openai/whisper) через библиотеку
-`faster-whisper`. Он конфигурируется секцией `audio.stt` файла `config/config.json` и
-выполняет все вспомогательные задачи:
+[Russian version](stt_RUS.md)
 
-* инициализирует модель по имени (`tiny`, `base`, `small`, `medium`, `large` или
-  путь к локальной директории) и подбирает устройство/тип вычислений;
-* приводит входящий поток PCM (`int16`) к целевой частоте дискретизации Whisper
-  (`audio.stt.sample_rate`, по умолчанию 16 кГц) с помощью потокового
-  ресемплера;
-* конвертирует значения в диапазон `[-1, 1]` и передаёт их в
-  `WhisperModel.transcribe`, добавляя указанные декодерные опции;
-* возвращает список распознанных фрагментов текста (по одному элементу на
-  сегмент, который вернула модель).
+The `audio.stt.whisper_engine.WhisperEngine` module encapsulates loading and running
+[Whisper](https://github.com/openai/whisper) models through `faster-whisper`. It is
+configured by the `audio.stt` section of `config/config.json` and performs the
+following supporting tasks:
 
-## Жизненный цикл движка
+* initializes the model by name (`tiny`, `base`, `small`, `medium`, `large`) or local
+  directory and selects the inference device and compute type;
+* resamples an incoming PCM stream (`int16`) to the Whisper target sample rate
+  (`audio.stt.sample_rate`, 16 kHz by default) with a streaming resampler;
+* converts samples to the `[-1, 1]` range and passes them to
+  `WhisperModel.transcribe` with the configured decoder options;
+* returns recognized text fragments, one item for each segment returned by the model.
 
-1. **Инициализация.** Экземпляр создаётся с конфигурацией `WhisperSttCfg`. При
-   активированном флаге `enabled` движок сразу загружает веса и готов к
-   инференсу.
-2. **Подготовка модели.** WhisperEngine создаёт `WhisperModel`, передавая
-   параметры `device`, `compute_type`, `cpu_threads`, `num_workers` и
-   `download_root`. Отсутствие `faster-whisper` приводит к исключению
+## Engine Lifecycle
+
+1. **Initialize.** Instance is created with `WhisperSttCfg` configuration. When
+the `enabled` flag is active, the engine immediately loads the weights and is ready
+for inference.
+2. **Model preparation.** `WhisperEngine` creates `WhisperModel`, passing
+parameters `device`, `compute_type`, `cpu_threads`, `num_workers` and
+`download_root`. If `faster-whisper` is unavailable, it raises
    `RuntimeError`.
-3. **Ресемплинг.** Метод `transcribe` принимает произвольные блоки PCM с
-   указанной частотой дискретизации. Если `sample_rate` отличается от
-   `audio.stt.sample_rate`, данные проходят через потоковый ресемплер
+3. **Resampling.** The `transcribe` method accepts arbitrary PCM blocks with
+specified sampling rate. If `sample_rate` differs from
+`audio.stt.sample_rate`, data passes through streaming resampler
    `StreamingResampler`.
-4. **Инференс.** После нормализации сигнала выполняется вызов
-   `WhisperModel.transcribe`, которому передаются параметры декодера
-   (beam-search, температура, фильтр VAD и т. д.). Результирующие строки
-   очищаются от ведущих/замыкающих пробелов.
+4. **Inference.** After normalizing the signal, the engine calls
+   `WhisperModel.transcribe` with decoder parameters such as beam search,
+   temperature, and the VAD filter. Leading and trailing whitespace is removed
+   from the resulting strings.
 
-## Метод `transcribe`
+## Method `transcribe`
 
 ```python
 WhisperEngine.transcribe(batch_pcm: np.ndarray | bytes | Iterable[int], sample_rate: int) -> list[str]
 ```
 
-* `batch_pcm` — моно PCM `int16` (байты, numpy-массив или итерируемая
-  последовательность). Для многоканального аудио микширование выполняется на
-  стороне вызывающего кода.
-* `sample_rate` — частота дискретизации поступившего блока.
+* `batch_pcm` — mono PCM `int16` as bytes, a NumPy array, or an iterable sequence.
+  The caller is responsible for mixing multichannel audio.
+* `sample_rate` is the sample rate of the received block.
 
-Метод возвращает список текстовых гипотез. При отключённом модуле (`enabled =
-false`) возвращается пустой список.
+The method returns a list of text hypotheses. When the module is disabled
+(`enabled=false`), it returns an empty list.
 
-## Конфигурация `audio.stt`
+## `audio.stt` Configuration
 
-### Базовые параметры
+### Basic parameters
 
-| Ключ | Назначение | Значение по умолчанию |
+| Key | Purpose | Default |
 |------|------------|-----------------------|
-| `enabled` | Включает Whisper STT. | `false` |
-| `model` | Имя модели `faster-whisper`, `avazir/faster-distil-whisper-large-v3-ru`, `large-v3`, `large-v3-turbo` либо путь к каталогу с весами. | `"small"` |
-| `device` | Устройство инференса (`"auto"`, `"cpu"`, `"cuda"`, `"cuda:0"`, `"mps"`, ...). При `null` библиотека подбирает его автоматически. | `null` |
-| `compute_type` | Тип вычислений (`"default"`, `"int8"`, `"int8_float16"`, ...). | `null` |
-| `download_root` | Каталог для кэша моделей. | `null` |
-| `blacklist_path` | Путь до текстового blacklist-файла для постфильтрации Whisper-фраз. Пути считаются от корня проекта. | `"config/blacklist.txt"` |
-| `local_files_only` | Запрещает автоматическое скачивание модели и заставляет `faster-whisper` работать только с локальными файлами. | `false` |
-| `cpu_threads` | Количество потоков для CPU-инференса. Игнорируется, если `null`. | `null` |
-| `num_workers` | Количество параллельных воркеров `faster-whisper`. | `null` |
-| `language` | ISO-код языка (например, `"ru"`, `"en"`). При `null` Whisper пытается определить язык автоматически. | `null` |
-| `task` | Тип задания (`"transcribe"` или `"translate"`). | `"transcribe"` |
-| `sample_rate` | Целевая частота дискретизации аудио (Гц). | `16000` |
-| `partial_topic` / `final_topic` | Темы EventBus для частичных и финальных гипотез (берутся из `cfg.events.audio`). | `"audio/stt/partial"` / `"audio/stt/final"` |
-| `min_confidence` | Минимальная уверенность для фиксации фразы. | `0.35` |
-| `stability_timeout_s` | Таймаут ожидания новых обновлений. | `1.2` сек |
-| `queue_wait_s` | Таймаут ожидания новых сегментов от `BufferedSpeechWriter`. | `0.2` сек |
-| `enable_punctuation` | Добавлять завершающий знак пунктуации при публикации финального текста. | `true` |
+| `enabled` | Enables Whisper STT. | `false` |
+| `model` | A `faster-whisper` model name such as `avazir/faster-distil-whisper-large-v3-ru`, `large-v3`, or `large-v3-turbo`, or a local weights directory. | `"small"` |
+| `device` | Inference device (`"auto"`, `"cpu"`, `"cuda"`, `"cuda:0"`, `"mps"`, ...). With `null`, the library picks it up automatically. | `null` |
+| `compute_type` | Calculation type (`"default"`, `"int8"`, `"int8_float16"`, ...). | `null` |
+| `download_root` | Directory for the model cache. | `null` |
+| `blacklist_path` | Path to the text blacklist used to post-filter Whisper phrases. Relative paths are resolved from the project root. | `"config/blacklist.txt"` |
+| `local_files_only` | Prevents automatic model download and forces `faster-whisper` to only work with local files. | `false` |
+| `cpu_threads` | Number of threads for CPU-inference. Ignored if `null`. | `null` |
+| `num_workers` | Number of parallel `faster-whisper` workers. | `null` |
+| `language` | Language ISO code (e.g. `"ru"`, `"en"`). With `null`, Whisper tries to detect the language automatically. | `null` |
+| `task` | Job type (`"transcribe"` or `"translate"`). | `"transcribe"` |
+| `sample_rate` | Target audio sampling rate (Hz). | `16000` |
+| `partial_topic` / `final_topic` | EventBus topics for partial and final hypotheses (taken from `cfg.events.audio`). | `"audio/stt/partial"` / `"audio/stt/final"` |
+| `min_confidence` | Minimum confidence to commit a phrase. | `0.35` |
+| `stability_timeout_s` | Timeout waiting for new updates. | `1.2` sec |
+| `queue_wait_s` | Timeout waiting for new segments from `BufferedSpeechWriter`. | `0.2` sec |
+| `enable_punctuation` | Add a final punctuation mark when publishing the final text. | `true` |
 
-### Параметры декодера
+### Decoder Options
 
-Следующие ключи передаются напрямую в `WhisperModel.transcribe`, если заданы в
-конфигурации:
+The following keys are passed directly to `WhisperModel.transcribe` if specified in
+presets:
 
-* `beam_size`, `best_of`, `patience`, `length_penalty` — управление beam search;
+* `beam_size`, `best_of`, `patience`, `length_penalty` — beam search control;
 * `temperature`, `temperature_increment_on_fallback`,
-  `prompt_reset_on_temperature` — температурные параметры;
-* `initial_prompt` — префикс для первой гипотезы;
-* `condition_on_previous_text` — наследовать ли предыдущий текст в следующих
-  окнах;
+`prompt_reset_on_temperature` — temperature parameters;
+* `initial_prompt` — prefix for the first hypothesis;
+* `condition_on_previous_text` — whether to inherit the previous text in the following
+windows;
 * `compression_ratio_threshold`, `logprob_threshold`,
-  `no_speech_threshold`, `max_initial_timestamp` — эвристики остановки и
-  фильтрации;
-* `suppress_tokens`, `suppress_blank` — управление подавлением токенов;
-* `vad_filter`, `vad_parameters` — активация VAD фильтра внутри
+  `no_speech_threshold`, `max_initial_timestamp` — stopping and filtering controls;
+* `suppress_tokens`, `suppress_blank` — token suppression management;
+* `vad_filter`, `vad_parameters` — activation of VAD filter inside
   `faster-whisper`;
-* `word_timestamps`, `without_timestamps` — включение таймштампов.
+* `word_timestamps`, `without_timestamps` — enable time stamps.
 
-Поля можно сбрасывать в `null`, чтобы использовать значения по умолчанию
-`faster-whisper`.
+Set fields to `null` to use `faster-whisper` defaults.
 
-## Потоковый транскрайбер
+## Streaming Transcriber
 
-Модуль `audio.stt.streaming.WhisperStreamingTranscriber` связывает
-`BufferedSpeechWriter`, `WhisperEngine` и системную шину событий для непрерывной
-транскрипции. Он работает в асинхронной задаче, читает сегменты из очереди
-`BufferedSpeechWriter.queue`, передаёт их в Whisper и управляет накоплением
-частичных гипотез.
+Module `audio.stt.streaming.WhisperStreamingTranscriber` links
+`BufferedSpeechWriter`, `WhisperEngine` and system event bus for continuous
+transcription. It works in an asynchronous task, reads segments from the queue
+`BufferedSpeechWriter.queue`, transfers them to Whisper and manages the accumulation
+of partial hypotheses.
 
-Ключевые обязанности:
+Key responsibilities:
 
-1. **Буферизация и состояние.** Транскрайбер отслеживает текущую гипотезу,
-   таймштампы обновлений и метаданные сегментов (длительность, уверенность VAD,
-   границы отрезков).
-2. **Частичные публикации.** После каждого обновления гипотезы публикует событие
-   `audio/stt/partial` с полями `text`, `raw_text`, `is_final=false` и
-   метаданными сегмента.
-3. **Финализация.** По истечении таймаута стабильности или при принудительном
-   вызове формирует финальную фразу, применяет постобработку (нормализация
-   пробелов, капитализация, опциональная пунктуация) и рассылает событие
+1. **Buffering and state.** The transcriber tracks the current hypothesis,
+update timestamps and segment metadata (duration, VAD confidence,
+the boundaries of the segments).
+2. **Partial publications.** After each update, the transcriber publishes an event
+`audio/stt/partial` with fields `text`, `raw_text`, `is_final=false` and
+segment metadata.
+3. **Finalization.** After the stability timeout or a forced
+finalization, it generates the final phrase, applies post-processing (whitespace
+normalization, capitalization, and optional punctuation), and publishes an event
    `audio/stt/final`.
-4. **Интеграция с LLM.** Финальный текст помещается в асинхронную очередь
-   `llm_queue` как строка; дополнительно можно передать callback `on_final`,
-   который будет вызван для каждой финальной реплики. В стандартном
-   `AudioAgent` этот callback публикует итог в `cfg.events.llm.input_text`.
+4. **Integration with LLM.** The final text is placed in the asynchronous queue
+`llm_queue` as a string; optionally, you can pass callback `on_final`,
+which is called for each final utterance. In the standard
+`AudioAgent`, this callback publishes the result to `cfg.events.llm.input_text`.
 
-Внутренний payload callback'а содержит `pcm_data` исходного сегмента, но в
-событие `audio/stt/final` это поле не публикуется: перед отправкой в EventBus
-оно удаляется.
+The internal callback payload contains the `pcm_data` of the original segment, but in
+event `audio/stt/final` this field is not published: before sending to EventBus
+it is removed.
 
-## Гейтинг направленности речи
+## Directed-Speech Gating
 
-Перед отправкой распознанной речи в LLM срабатывает двухэтапный гейт
+Before sending the recognized speech to the LLM, a two-stage gate is triggered
 `llm.speech_gate.SpeechDirectionGate`:
 
-* **Правила + скоринг.** Текст проверяется на имя ассистента из OpenClaw
-  identity-файла (строки `Name:` / `Имя:`) и маркеры обращения: командные глаголы,
-  вопросительные и модальные слова, вежливые формулы. Маркеры читаются один раз
-  при старте из файла `speech_gate.patterns_file` (например,
-  `config/speech_gate_patterns.json`), при его отсутствии используются
-  inline-списки из конфигурации. Если правило набирает порог
-  `speech_gate.rules_threshold` (0.7 по умолчанию), запрос считается
-  адресованным и пропускается без ML-проверки.
-* **ML-классификатор.** Для сомнительных реплик запускается модель
-  `models/directed-ruElectra-small-fp16` (параметры и устройство задаются в
-  `speech_gate.model`). Итоговый скор рассчитывается как
-  `0.6 * ml + 0.4 * rules`, и при значении ниже `speech_gate.final_threshold`
-  (0.5) фраза отбрасывается с диагностикой в логах в режиме DEBUG.
+* **Rules and scoring.** The text is checked for the assistant name from the OpenClaw
+identity-file (lines `Name:` / `Имя:`) and address markers: command verbs,
+interrogative and modal words, polite formulas. Markers are read once
+when starting from a `speech_gate.patterns_file` file (e.g.,
+`config/speech_gate_patterns.json`), in its absence are used
+inline lists from the configuration. If the rule score reaches
+`speech_gate.rules_threshold` (0.7 default), the request is considered
+addressed and skipped without ML-check.
+* **ML classifier.** For uncertain utterances, the model
+`models/directed-ruElectra-small-fp16` (parameters and device are set in
+`speech_gate.model`). The final score is calculated as
+`0.6 * ml + 0.4 * rules`, and below `speech_gate.final_threshold`
+(0.5) the phrase is discarded with diagnostics in the logs in DEBUG mode.
 
-После удачного прохождения гейта включается «attention mode» на несколько
-секунд (`speech_gate.attention_window_seconds`), когда последующие реплики
-пропускаются без фильтров. Если фраза заканчивается на маркеры продолжения
-(`speech_gate.continuation_patterns`, например «и ещё», «а также»), окно
-продлевается на `speech_gate.attention_extension_seconds`.
+After a phrase passes the gate, "attention mode" is enabled for several seconds
+(`speech_gate.attention_window_seconds`), allowing subsequent utterances through
+without filtering. If a phrase ends with a continuation marker
+(`speech_gate.continuation_patterns`, for example, "and more", "as well as"), window
+renews on `speech_gate.attention_extension_seconds`.
 
-### Режимы работы гейта
+### Gate Operating Modes
 
-Режимы (`standby/mute/normal/chatty`) можно переключать извне. Назначение:
+Modes (`standby/mute/normal/chatty`) can be switched externally. Purpose:
 
-- **normal** — стандартный режим. Срабатывают правила, при необходимости
-  подключается ML-классификатор; после успешного обращения включается
+- **normal** — standard mode. Rules are triggered, if necessary
+the ML classifier is invoked; a successful request enables
   «attention mode».
-- **standby** — режим ожидания: гейт блокирует все реплики независимо от
-  правил и ML.
-- **mute** — «тихий» режим: пропускаются только обращения по имени ассистента,
-  причём имя должно быть в начале распознанной фразы; остальные реплики
-  блокируются.
-- **chatty** — «болтливый» режим: реплики пропускаются без фильтрации, гейт
-  фактически всегда открыт.
+- **standby** — standby mode: the gate blocks all utterances regardless of
+rules and ML.
+- **mute** — quiet mode: only phrases beginning with the assistant's name pass,
+and all other utterances are blocked.
+- **chatty** — chatty mode: utterances pass without filtering; the gate
+is actually always open.
 
-### Runtime-переключение режимов
+### Runtime Mode Switching
 
-Во время работы `main.py` поднимает локальный control API
-`http://127.0.0.1:18790`. Пользоваться им проще через CLI:
+During operation, `main.py` starts the local control API at
+`http://127.0.0.1:18790`. It is easier to use it through the CLI:
 
 ```bash
 .venv/bin/python utils/listenerctl.py speech-gate status
@@ -176,12 +172,12 @@ false`) возвращается пустой список.
 .venv/bin/python utils/listenerctl.py speech-gate reset --reason "recover voice"
 ```
 
-`normal` отменяет временный режим. `mute` и `chatty` могут быть постоянными или
-временными. Через HTTP API и `listenerctl` режим `standby` принимается только с
-TTL, чтобы не запереть голосовое управление. Любое runtime-переключение
-сбрасывает attention-window.
+`normal` cancels a temporary mode. `mute` and `chatty` can be permanent or
+temporary. Via HTTP API and `listenerctl` mode `standby` is accepted only with
+TTL to keep voice control from locking. Any runtime switching
+resets the attention window.
 
-Секция `control` в `config/config.json`:
+Section `control` in `config/config.json`:
 
 ```json
 {
@@ -195,10 +191,10 @@ TTL, чтобы не запереть голосовое управление. �
 }
 ```
 
-CLI читает `LISTENER_CONTROL_URL` и `LISTENER_CONTROL_TOKEN`. Если `host` не
-loopback, Listener требует непустой `control.token`.
+The CLI reads `LISTENER_CONTROL_URL` and `LISTENER_CONTROL_TOKEN`. If `host` is not
+loopback, Listener requires a non-empty `control.token`.
 
-Тот же control API также предоставляет runtime-управление встроенным Speaker:
+The same control API also provides runtime management of the built-in Speaker:
 
 ```bash
 .venv/bin/python utils/listenerctl.py speaker status
@@ -206,12 +202,12 @@ loopback, Listener требует непустой `control.token`.
 .venv/bin/python utils/listenerctl.py speaker on
 ```
 
-Команда `speech-gate reset` нужна как recovery-кнопка: она возвращает
-`speech_gate` в `normal`, заново включает `speaker` и принудительно
-восстанавливает все запомненные ducking-volume'ы, если после barge-in или
-прерванной генерации голос/beep Listener остались приглушёнными.
+The `speech-gate reset` command is needed as a recovery button: it returns
+`speech_gate` in `normal`, re-enables `speaker` and force
+restores all remembered ducking volumes if Listener's voice or beeps remain
+quiet after barge-in or interrupted generation.
 
-OpenClaw-интеграция v1 реализована как workspace skill:
+OpenClaw integration v1 is implemented as a workspace skill:
 
 ```bash
 mkdir -p "$(openclaw config get agents.defaults.workspace)/skills"
@@ -219,7 +215,7 @@ cp -R openclaw/skills/listener-control \
   "$(openclaw config get agents.defaults.workspace)/skills/"
 ```
 
-В OpenClaw `TOOLS.md` удобно добавить локальную заметку:
+In OpenClaw `TOOLS.md`, it is convenient to add a local note:
 
 ```markdown
 ### Listener
@@ -228,51 +224,50 @@ cp -R openclaw/skills/listener-control \
 - Use: $LISTENER_HOME/.venv/bin/python $LISTENER_HOME/utils/listenerctl.py
 ```
 
-### Настройка `speech_gate`
+### `speech_gate` Setup
 
-Ключи секции `speech_gate` в `config/config.json` и их назначение:
+`speech_gate` section keys in `config/config.json` and their purpose:
 
-| Ключ | Значение | По умолчанию |
+| Key | Purpose | Default |
 |------|----------|--------------|
-| `enable` | Включает/выключает гейт. При `false` реплики проходят без проверки правил и ML, режим внимания не используется. | `true` |
-| `rules_threshold` | Порог срабатывания правил. Если скор из словарей (имя, глаголы, маркеры) превышает это значение, фраза считается обращением без запуска ML. | `0.7` |
-| `final_threshold` | Итоговый порог после смешивания правил и ML (`0.6 * ml + 0.4 * rules`). Реплики ниже порога игнорируются. | `0.5` |
-| `attention_window_seconds` | Длительность «attention mode» после успешного обращения, в течение которой гейт пропускает реплики без фильтров. | `8.0` |
-| `attention_extension_seconds` | На сколько секунд продлевается окно внимания при обнаружении маркеров продолжения («и ещё», «а также» и т. п.). | `3.0` |
-| `patterns_file` | Путь до JSON со списками маркеров (`command_verbs`, `continuation_patterns`, и др.). Пути считаются от корня проекта. `assistant_names` в этом файле игнорируется. | `"config/speech_gate_patterns.json"` |
-| `identity_file` | Путь до OpenClaw identity Markdown. `null` или `"auto"` включает автообнаружение через `OPENCLAW_IDENTITY_FILE`, `OPENCLAW_WORKSPACE`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, `~/.openclaw/openclaw.json` и профильные каталоги `~/.openclaw-*`. Явный относительный путь считается от корня Listener. | `null` |
-| `model.path` | Каталог модели `directed-ruElectra-small-fp16` для классификатора направленности речи. | `"models/directed-ruElectra-small-fp16"` |
-| `model.device` | Устройство для инференса классификатора (`cpu`, `cuda`, `cuda:0` и т. п.). | `"cpu"` |
-| `model.threshold` | Порог вероятности для ответа модели (до смешивания с правилом). | `0.7` |
-| `model.max_length` | Максимальная длина токенизации входного текста для классификатора. | `64` |
+| `enable` | Enables or disables the gate. When `false`, utterances pass without rule or ML checks and attention mode is unused. | `true` |
+| `rules_threshold` | Rule threshold. If the score from dictionaries (name, verbs, and markers) exceeds it, the phrase is treated as directed speech without running ML. | `0.7` |
+| `final_threshold` | Final threshold after combining rules and ML (`0.6 * ml + 0.4 * rules`). Utterances below it are ignored. | `0.5` |
+| `attention_window_seconds` | Duration of attention mode after a successful directed utterance; subsequent utterances pass without filtering. | `8.0` |
+| `attention_extension_seconds` | The attention window is extended by how many seconds when continuation markers are detected ("and more", "as well as", etc.). | `3.0` |
+| `patterns_file` | Path to JSON token lists (`command_verbs`, `continuation_patterns`, etc.). Relative paths are resolved from the project root. `assistant_names` in this file is ignored. | `"config/speech_gate_patterns.json"` |
+| `identity_file` | Path to the OpenClaw identity Markdown. `null` or `"auto"` enables discovery through `OPENCLAW_IDENTITY_FILE`, `OPENCLAW_WORKSPACE`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, `~/.openclaw/openclaw.json`, and `~/.openclaw-*` profile directories. Explicit relative paths are resolved from the Listener root. | `null` |
+| `model.path` | `directed-ruElectra-small-fp16` model directory for speech direction classifier. | `"models/directed-ruElectra-small-fp16"` |
+| `model.device` | Classifier inference device (`cpu`, `cuda`, `cuda:0`, etc.). | `"cpu"` |
+| `model.threshold` | The probability threshold for the model response (before mixing with the rule). | `0.7` |
+| `model.max_length` | The maximum length of the input text tokenization for the classifier. | `64` |
 
-### Звуковые индикаторы
+### Audible Indicators
 
-Listener умеет проигрывать короткие уведомительные сигналы для ключевых
-переходов голосового контура. Конфигурация задаётся в секции `indicators`
-файла `config/config.json`.
+Listener can play short notification tones for key voice-path transitions. The
+configuration is stored in the `indicators` section of `config/config.json`.
 
-| Ключ | Значение | По умолчанию |
+| Key | Purpose | Default |
 |------|----------|--------------|
-| `enabled` | Включает/выключает звуковые индикаторы. | `true` |
-| `backend` | `auto`, `sounddevice`, `winsound` или `none`. На Linux обычно используется `sounddevice`, на Windows возможен fallback в `winsound`. | `"auto"` |
-| `output_device_index` | Индекс выходного audio-device для сигналов. `null` использует системное устройство по умолчанию. | `null` |
-| `sample_rate` | Частота дискретизации синтезированных сигналов. | `24000` |
-| `volume` | Громкость сигналов в диапазоне `0.0..1.0`. | `0.18` |
-| `queue_maxsize` | Максимум сигналов в очереди playback. При переполнении новые сигналы отбрасываются. | `8` |
-| `rejected` | Проигрывать сигнал, когда фраза отвергнута SpeechGate. | `true` |
-| `forwarded` | Проигрывать сигнал, когда фраза успешно отправлена в OpenClaw. | `true` |
-| `local_handled` | Проигрывать сигнал, когда служебная команда обработана внутри Listener. | `true` |
-| `interrupted` | Проигрывать сигнал для успешного barge-in или stop в OpenClaw. | `true` |
+| `enabled` | Turns on/off the audible indicators. | `true` |
+| `backend` | `auto`, `sounddevice`, `winsound`, or `none`. On Linux, `sounddevice` is usually used, on Windows, fallback to `winsound` is possible. | `"auto"` |
+| `output_device_index` | Output audio-device index for signals. `null` uses the default system device. | `null` |
+| `sample_rate` | Sampling frequency of synthesized signals. | `24000` |
+| `volume` | The signal volume is in the range `0.0..1.0`. | `0.18` |
+| `queue_maxsize` | Maximum signals in the playback queue. In case of overflow, new signals are discarded. | `8` |
+| `rejected` | Play a signal when a phrase is rejected by SpeechGate. | `true` |
+| `forwarded` | Play a tone when a phrase is successfully sent to OpenClaw. | `true` |
+| `local_handled` | Play a tone when Listener handles a local control command. | `true` |
+| `interrupted` | Play a signal for a successful barge-in or stop in OpenClaw. | `true` |
 
-По умолчанию есть четыре разных коротких сигнала:
+By default, there are four different short beeps:
 
-1. фраза отвергнута SpeechGate;
-2. фраза прошла SpeechGate и успешно отправлена в OpenClaw;
-3. служебная voice-команда (`mute`, `normal`, `standby`) обработана внутри Listener;
-4. перебивка или stop-команда успешно дошла до OpenClaw.
+1. the phrase was rejected by SpeechGate.
+2. the phrase passed SpeechGate and was successfully sent to OpenClaw;
+3. service voice command (`mute`, `normal`, `standby`) processed inside Listener;
+4. interrupt or stop command successfully reached OpenClaw.
 
-Можно выключать типы сигналов по отдельности, например:
+You can turn off the signal types individually, for example:
 
 ```json
 {
@@ -286,9 +281,10 @@ Listener умеет проигрывать короткие уведомител
 }
 ```
 
-### Формат `speech_gate_patterns.json`
+### Format `speech_gate_patterns.json`
 
-Файл описывает списки паттернов, которыми оперирует гейт при расчёте `rules`-скора. Структура представляет собой объект с массивами строк. Пример:
+The file contains pattern lists used by the gate to calculate the `rules` score.
+Its top-level value is an object containing arrays of strings. Example:
 
 ```json
 {
@@ -307,14 +303,14 @@ Listener умеет проигрывать короткие уведомител
 }
 ```
 
-Имя ассистента не хранится в `speech_gate_patterns.json`: поле
-`assistant_names` в этом файле игнорируется. Основной источник имени:
-`IDENTITY.md` в workspace OpenClaw. Listener пытается найти его автоматически:
-сначала через переменные окружения `OPENCLAW_IDENTITY_FILE`, `OPENCLAW_WORKSPACE`,
-`OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, затем через конфиги
-`~/.openclaw/openclaw.json`, `~/.openclaw-dev/openclaw.json` и
-`~/.openclaw-*/openclaw.json`. Если OpenClaw хранит workspace нестандартно,
-задайте путь вручную:
+The assistant name is not stored in `speech_gate_patterns.json`; the
+`assistant_names` field is ignored. The primary name source is `IDENTITY.md` in
+the OpenClaw workspace. Listener attempts to locate it automatically:
+first through the environment variables `OPENCLAW_IDENTITY_FILE`, `OPENCLAW_WORKSPACE`,
+`OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, then via configs
+`~/.openclaw/openclaw.json`, `~/.openclaw-dev/openclaw.json` and
+`~/.openclaw-*/openclaw.json`. If OpenClaw stores its workspace elsewhere,
+set the path manually:
 
 ```json
 {
@@ -324,88 +320,86 @@ Listener умеет проигрывать короткие уведомител
 }
 ```
 
-Пример содержимого identity-файла:
+Example of identity file contents:
 
 ```markdown
 Name: Kissa
 Имя: Кисса
 ```
 
-Можно опустить любые поля. Listener умеет объединять списки из файла с
-дополнительными inline-паттернами из `config/config.json`, если они там заданы,
-но в проекте рекомендуется держать основной словарь именно в
-`config/speech_gate_patterns.json`, а inline-списки в `config/config.json`
-оставлять пустыми. Так проще избегать двойных определений и смысловых
-пересечений между обычными командными глаголами и локальными control-фразами.
-Если файл по указанному пути не найден или не читается, в лог пишется
-предупреждение, а гейт продолжает работу только с inline-паттернами из
-`config/config.json` и именем из identity-файла.
+Any fields may be omitted. Listener can combine lists from the file with
+additional inline patterns from `config/config.json`, if defined there,
+but the project recommends keeping the main dictionary in
+`config/speech_gate_patterns.json` and leaving inline lists in `config/config.json`
+empty. This avoids duplicate definitions and semantic
+intersections between ordinary command verbs and local control phrases.
+If the configured file is missing or unreadable, Listener logs a warning and the gate
+continues using only inline patterns from
+`config/config.json` and the name from the identity file.
 
-Локальные команды управления режимами и stop-команды принимаются только в форме
-`<имя ассистента> + команда`, то есть имя должно быть в начале распознанной
-фразы: `Марина, помолчи`, `Марина, говори`, `Марина, включи озвучку`,
-`Марина, отключи озвучку`, `Марина, стоп`. Слова вроде `включи` или `говори`
-без имени в начале не переключают режим.
+Local mode-control and stop commands are accepted only in the form
+`<assistant name> + command`: the name must begin the recognized phrase, for example
+`Марина, помолчи`, `Марина, говори`, `Марина, включи озвучку`,
+`Марина, отключи озвучку`, or `Марина, стоп`. Words such as `включи` or `говори`
+without a name at the beginning do not switch the mode.
 
-Это же правило важно для `mute`: в этом режиме гейт пропускает только фразы,
-которые начинаются с имени ассистента. Вхождение имени в середине реплики не
-достаточно.
+The same rule applies to `mute`: the gate passes only phrases that begin with the
+assistant's name. An occurrence in the middle of an utterance is insufficient.
 
-Есть отдельное исключение для локальной voice-команды `Марина, отключись`:
-внутренний `SpeechGateAgent` может переключить Listener в `standby` без TTL,
-потому что эта команда обрабатывается локально до отправки в OpenClaw. Выход из
-такого состояния — например, `Марина, говори` или ручное
+There is a separate exception for the local voice command `Марина, отключись`:
+the internal `SpeechGateAgent` can switch Listener to `standby` without a TTL,
+because this command is handled locally before being sent to OpenClaw. Quit
+this state with, for example, `Марина, говори` or the manual command
 `listenerctl.py normal`.
 
-`local_barge_in_commands` описывает явные фразы перебивки. Они тоже требуют имя
-ассистента в начале: `Марина, нет, я имел в виду...`, `Марина, точнее...`.
-Обычные обращения вроде `Марина, какая погода?` не отправляются через
-`sessions.steer` и идут в OpenClaw обычным `chat.send`.
+`local_barge_in_commands` describes explicit interrupt phrases. They also require a name
+at the beginning: `Марина, нет, я имел в виду...`, `Марина, точнее...`.
+Ordinary inquiries like `Марина, какая погода?` are not sent via
+`sessions.steer` and go to OpenClaw with the usual `chat.send`.
 
-`command_verbs` стоит использовать только для обычных пользовательских задач
-вроде `покажи`, `найди`, `объясни`, `напомни`. Фразы управления Listener вроде
-`замолчи`, `слушай`, `стоп`, `остановись` лучше держать только в
-`local_*_commands`, чтобы они не дублировались в общем rules-скоре.
+`command_verbs` should only be used for normal user tasks
+like `покажи`, `найди`, `объясни`, `напомни`. Listener control phrases like
+`замолчи`, `слушай`, `стоп`, and `остановись` should remain only in
+`local_*_commands`, so that they are not duplicated in the general rules.
 
-### Параметры исполнения
+### Execution Parameters
 
-Объект `StreamingTranscriberConfig` управляет поведением транскрайбера во время
-работы. Все значения по умолчанию наследуются из `WhisperSttCfg`, но могут быть
-переопределены в рантайме.
+The `StreamingTranscriberConfig` entity controls the behavior of the transcriber during
+work. All default values are inherited from `WhisperSttCfg`, but can be
+redefined in runtime.
 
-### Жизненный цикл
+### Lifecycle
 
-1. Создайте `BufferedSpeechWriter` и передайте его в конструктор
-   `WhisperStreamingTranscriber` вместе с конфигурацией STT и, при необходимости,
-   объектом `EventBus`.
-2. Вызовите `await transcriber.start()`, чтобы запустить фоновую задачу. С этого
-   момента транскрайбер будет потреблять сегменты из `writer.queue`.
-3. По завершении работы вызовите `await transcriber.stop()` или используйте
-   контекстный менеджер `async with`, чтобы дождаться публикации всех финальных
-   гипотез и корректно очистить состояние.
+1. Create `BufferedSpeechWriter` and pass it to the constructor
+`WhisperStreamingTranscriber` together with the STT configuration and, if needed, an
+`EventBus` object.
+2. Call `await transcriber.start()` to start the background task. From this
+moment, the transcriber will consume segments from `writer.queue`.
+3. When finished, call `await transcriber.stop()` or use
+context manager `async with` to wait for the publication of all final
+hypotheses and correctly clear the state.
 
-Все публикации выполняются асинхронно с защитой от исключений, поэтому сбои
-подписчиков не останавливают транскрайбер. В случае переполнения `llm_queue`
-финальная фраза отбрасывается с записью предупреждения в лог.
+All publications are asynchronous and exception-safe, so transcriber failures do not
+stop subscribers. If `llm_queue` overflows,
+the final phrase is discarded with a warning entry in the log.
 
-### Whisper blacklist
+### Whisper Blacklist
 
-Если задан `audio.stt.blacklist_path`, Listener читает blacklist из этого
-файла. Формат поддерживает две секции:
+If set to `audio.stt.blacklist_path`, Listener reads the blacklist from this
+file. The format supports two sections:
 
-- `[phrases]` - точные фразы. Распознанная фраза отбрасывается целиком только
-  если после удаления пунктуации и нормализации регистра она полностью
-  совпадает с записью.
-- `[words]` - отдельные слова. Эти слова вырезаются из распознанного текста по
-  границам слов; остальная часть фразы остаётся.
+- `[phrases]` — exact phrases. A recognized phrase is discarded in full only when,
+  after punctuation removal and case normalization, it exactly matches an entry.
+- `[words]` - individual words. These words are cut from the recognized text by
+word boundaries; the rest of the phrase remains.
 
-Матчинг выполняется в нормализованном виде:
+Matching is performed in a normalized form:
 
-- регистр игнорируется;
-- знаки препинания и символы не влияют на сравнение;
-- слова не матчятся как подстроки: `1988` не совпадает с `19880`.
+- letter case is ignored;
+- punctuation marks and symbols do not affect the comparison;
+- words will not match as substrings: `1988` does not match `19880`.
 
-Пример:
+Example:
 
 ```text
 [phrases]
@@ -416,43 +410,42 @@ Name: Kissa
 1988
 ```
 
-В таком режиме `Спасибо!` и `Всем пока...` будут отброшены целиком, но
-`Спасибо, Марина!` и `Спасибо, спасибо!` пройдут дальше. Фраза
-`1988, 1988! Ура! Здорово! 1888!` превратится в
-`Ура! Здорово! 1888!`; чтобы убрать `1888`, его нужно добавить в `[words]`.
+In this mode, `Спасибо!` and `Всем пока...` will be discarded entirely, but
+`Спасибо, Марина!` and `Спасибо, спасибо!` will go further. Phrase
+`1988, 1988! Ура! Здорово! 1888!` will turn into
+`Ура! Здорово! 1888!`; to remove `1888`, it must be added to `[words]`.
 
-## Аудио-агент
+## Audio Agent
 
-Для удобства интеграции все компоненты объединены агентом
-`agents.audio_agent.AudioAgent`. Он запускает микрофонный поток, обрабатывает
-аудио и управляет транскрипцией, публикуя события в системную шину.
+For ease of integration, all components are combined by the agent
+`agents.audio_agent.AudioAgent`. It starts the microphone stream, processes
+audio and controls transcription by publishing events to the system bus.
 
-### Архитектура пайплайна
+### Pipeline Architecture
 
-1. **MicrophoneStream** — захватывает PCM с выбранного устройства и транслирует
-   кадры в шину `cfg.events.audio.raw_frame` (по умолчанию `audio/raw_frame`).
-2. **AudioProcessor** — принимает кадры через `submit()` и выполняет VAD,
-   шумоподавление и другую обработку, публикуя результат как
-   `cfg.events.audio.processed_frame` и события `cfg.events.audio.voice_activity`.
-3. **BufferedSpeechWriter** — подписывается на события процессора, собирает
-   сегменты речи с прероллом/построллом и кладёт их в очередь `writer.queue`.
-4. **WhisperStreamingTranscriber** — в отдельной задаче читает сегменты из
-   очереди, вызывает `WhisperEngine` и отправляет промежуточные гипотезы
-   (`cfg.audio.stt.partial_topic`, то есть `cfg.events.audio.stt_partial`) и
-   финальные фразы (`cfg.audio.stt.final_topic`, то есть
-   `cfg.events.audio.stt_final`). В стандартном `AudioAgent` финальный текст
-   затем дополнительно публикуется в `cfg.events.llm.input_text` для языковой
-   модели.
+1. **MicrophoneStream** — captures PCM from the selected device and broadcasts
+frames to the `cfg.events.audio.raw_frame` bus (default is `audio/raw_frame`).
+2. **AudioProcessor** — accepts frames via `submit()` and performs VAD,
+noise reduction and other processing, publishing the result as
+`cfg.events.audio.processed_frame` and `cfg.events.audio.voice_activity` events.
+3. **BufferedSpeechWriter** — subscribes to processed-frame and VAD events, collects
+preroll/postroll speech segments and puts them in the `writer.queue` queue.
+4. **WhisperStreamingTranscriber** — reads segments from the
+queue, calls `WhisperEngine` and sends intermediate hypotheses
+(`cfg.audio.stt.partial_topic`, i.e. `cfg.events.audio.stt_partial`) and
+final phrases (`cfg.audio.stt.final_topic`, i.e.
+`cfg.events.audio.stt_final`). In the standard `AudioAgent`, the final text is
+also published to `cfg.events.llm.input_text` for language-model consumers.
 
-## Управление состоянием
+## State Control
 
-* `await AudioAgent.pause()` — приостанавливает пайплайн, закрывая активные
-  компоненты.
-* `await AudioAgent.resume()` — возобновляет работу, заново инициализируя поток
-  и перезапуская обработку аудио.
-* `await AudioAgent.close()` — окончательно завершает работу агента и
-  освобождает все ресурсы.
+* `await AudioAgent.pause()` — suspends the pipeline, closing the active
+components.
+* `await AudioAgent.resume()` — Resumes operation by reinitializing the flow
+and restarting audio processing.
+* `await AudioAgent.close()` — terminates the agent and
+frees up all resources.
 
-Методы защищены от повторных вызовов и корректно обрабатывают отмену фоновых
-задач. Это позволяет безопасно встроить аудиопайплайн в управляющий
-оркестратор системы и гибко управлять режимами захвата речи.
+Methods are protected from repeated calls and correctly handle the cancellation of background
+tasks. This allows you to safely embed an audio pipeline into the manager
+system orchestrator and flexibly control speech capture modes.

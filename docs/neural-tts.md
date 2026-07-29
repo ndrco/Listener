@@ -1,5 +1,7 @@
 # Neural TTS: VoxCPM2 and CosyVoice3
 
+[Русская версия](neural-tts_RUS.md)
+
 Listener can use VoxCPM2 or Fun-CosyVoice3-0.5B as the primary Speaker
 backend. Both integrations keep the model in a persistent child process,
 stream raw PCM to Listener over stdio, and fall back to Piper if startup or

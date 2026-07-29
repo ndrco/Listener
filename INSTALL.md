@@ -1,5 +1,7 @@
 # Installation
 
+[Русская версия](INSTALL_RUS.md)
+
 This guide covers a fresh Linux setup for Listener and the optional OpenClaw
 integration. Windows is supported through the sample config in
 `config/config.windows.example.json`, but Linux PipeWire/PulseAudio is the

@@ -1,5 +1,7 @@
 # OpenClaw Integration
 
+[Русская версия](openclaw_RUS.md)
+
 Listener integrates with OpenClaw in two directions:
 
 1. Accepted voice phrases are sent to OpenClaw through `openclaw gateway call chat.send`.

@@ -1,5 +1,7 @@
 # Release Workflow
 
+[Русская версия](release_RUS.md)
+
 Use this checklist before publishing a Listener release.
 
 ## Repository Hygiene

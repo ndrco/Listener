@@ -1,5 +1,7 @@
 # Listener
 
+[Русская версия](README_RUS.md)
+
 `Listener` is a local voice-input runtime for OpenClaw. It captures microphone
 audio, applies audio processing/VAD/AEC, transcribes speech with Whisper, filters
 phrases by directed-speech rules, and forwards accepted text to OpenClaw.

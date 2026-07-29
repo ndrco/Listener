@@ -1,5 +1,7 @@
 # Listener as a user service
 
+[Русская версия](service_RUS.md)
+
 Listener should run as a foreground Python process supervised by systemd. Use a
 user service on Linux, because Listener needs access to the user's microphone,
 PipeWire/PulseAudio session, and local OpenClaw environment.
