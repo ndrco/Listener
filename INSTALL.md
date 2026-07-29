@@ -261,14 +261,12 @@ Minimal config:
 }
 ```
 
-Install the Listener control skill into the active OpenClaw workspace:
-
 Install the bundled OpenClaw skills:
 
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-for skill in listener-control listener-speaker-off; do
+for skill in listener-control listener-speaker-off listener-tts-file; do
   rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
   cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
 done
@@ -317,6 +315,11 @@ After that, OpenClaw can use the `listener-control` skill for phrases like:
 - "return to normal listening" -> `normal`
 - "turn active listening on" -> `chatty --ttl 600`
 - "turn active listening off" -> `mute`
+
+With a persistent VoxCPM2 or CosyVoice3 backend, `listener-tts-file` lets
+OpenClaw save text as WAV through Listener's existing worker. It depends on the
+installed `listener-control` helper for local path, URL and token discovery.
+See [docs/neural-tts.md](docs/neural-tts.md#render-wav-files-without-another-tts-process).
 
 Listener also reads OpenClaw assistant identity from the OpenClaw workspace
 `IDENTITY.md` automatically. Supported keys are `Name:` and `Имя:`.

@@ -69,7 +69,9 @@ class NeuralWorkerClient:
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr_tail: deque[str] = deque(maxlen=20)
         self._active_request_id: str | None = None
+        self._active_owner: str | None = None
         self._active_cancelled: asyncio.Event | None = None
+        self._active_cancel_command_sent = False
         self._ready_metadata: dict | None = None
         self._last_error = ""
         self._started_at: float | None = None
@@ -117,30 +119,50 @@ class NeuralWorkerClient:
             self._last_error = ""
             return dict(metadata)
 
-    async def generate(self, request: SpeechRequest) -> AsyncIterator[AudioChunk]:
+    async def generate(
+        self,
+        request: SpeechRequest,
+        *,
+        owner: str = "default",
+        cancellation_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[AudioChunk]:
         speech_request = SpeechRequest.coerce(request)
         if not speech_request.text:
             return
+        generation_owner = str(owner or "default").strip() or "default"
         async with self._generation_lock:
+            if cancellation_event is not None and cancellation_event.is_set():
+                return
             await self.start()
+            if cancellation_event is not None and cancellation_event.is_set():
+                return
             request_id = uuid.uuid4().hex
             cancel_event = asyncio.Event()
             self._active_request_id = request_id
+            self._active_owner = generation_owner
             self._active_cancelled = cancel_event
+            self._active_cancel_command_sent = False
             terminal_received = False
             sequence = 0
             sample_rate = 0
             channels = 1
             sample_width = 2
             deadline = asyncio.get_running_loop().time() + self.generation_timeout_s
-            await self._send(
-                {
-                    "command": "generate",
-                    "request_id": request_id,
-                    "request": asdict(speech_request),
-                }
-            )
             try:
+                await self._send(
+                    {
+                        "command": "generate",
+                        "request_id": request_id,
+                        "request": asdict(speech_request),
+                    }
+                )
+                if (
+                    cancellation_event is not None
+                    and cancellation_event.is_set()
+                    and not self._active_cancel_command_sent
+                ):
+                    self._active_cancel_command_sent = True
+                    await self._send({"command": "cancel", "request_id": request_id})
                 while True:
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
@@ -207,14 +229,21 @@ class NeuralWorkerClient:
                 if terminal_received:
                     cancel_event.set()
                 self._active_request_id = None
+                self._active_owner = None
                 self._active_cancelled = None
+                self._active_cancel_command_sent = False
 
-    async def cancel(self) -> bool:
+    async def cancel(self, *, owner: str | None = None) -> bool:
         request_id = self._active_request_id
+        active_owner = self._active_owner
         event = self._active_cancelled
         if not request_id or event is None or not self._is_running():
             return False
-        await self._send({"command": "cancel", "request_id": request_id})
+        if owner is not None and str(owner) != active_owner:
+            return False
+        if not self._active_cancel_command_sent:
+            self._active_cancel_command_sent = True
+            await self._send({"command": "cancel", "request_id": request_id})
         try:
             await asyncio.wait_for(event.wait(), timeout=self.cancel_timeout_s)
         except asyncio.TimeoutError as exc:
@@ -243,6 +272,7 @@ class NeuralWorkerClient:
             "pid": proc.pid if proc is not None and proc.returncode is None else None,
             "backend": (self._ready_metadata or {}).get("backend"),
             "active_request_id": self._active_request_id,
+            "active_owner": self._active_owner,
             "started_at": self._started_at,
             "last_error": self._last_error or None,
             "stderr_tail": list(self._stderr_tail),
@@ -292,6 +322,8 @@ class NeuralWorkerClient:
         self._proc = None
         self._ready_metadata = None
         self._active_request_id = None
+        self._active_owner = None
+        self._active_cancel_command_sent = False
         event = self._active_cancelled
         self._active_cancelled = None
         if event is not None:

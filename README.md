@@ -20,8 +20,9 @@ platform-specific sample config in `config/config.windows.example.json`.
 - SpeechGate filtering with assistant name loaded from OpenClaw `IDENTITY.md`.
 - Runtime SpeechGate control API and `utils/listenerctl.py`.
 - Optional short audio indicators for rejected, forwarded and local control events.
-- Integrated local Speaker playback for OpenClaw replies through Piper.
-- Bundled OpenClaw workspace skill: `openclaw/skills/listener-control`.
+- Integrated local Speaker playback through Piper, VoxCPM2, or CosyVoice3.
+- Shared-worker neural TTS file rendering to WAV without a second model process.
+- Bundled OpenClaw workspace skills for runtime control and WAV rendering.
 
 ## Pipeline
 
@@ -34,7 +35,8 @@ Microphone -> AudioProcessor -> BufferedSpeechWriter -> WhisperStreamingTranscri
 Reply path when spoken replies are enabled:
 
 ```text
-OpenClaw Gateway -> SpeakerAgent -> PiperSpeechEngine -> paplay
+OpenClaw Gateway -> SpeakerAgent -> SpeechEngine -> local playback
+OpenClaw skill   -> Control API  -> same neural worker -> WAV file
 ```
 
 Core modules:
@@ -258,7 +260,7 @@ Install the bundled OpenClaw skills:
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-for skill in listener-control listener-speaker-off; do
+for skill in listener-control listener-speaker-off listener-tts-file; do
   rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
   cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
 done
@@ -306,6 +308,20 @@ directly, and fall back to Piper after startup or generation failures. The
 checked-in default remains Piper. See [docs/neural-tts.md](docs/neural-tts.md)
 for separate environment installation, model downloads, resource overhead,
 configuration, emoji styling and smoke tests.
+
+With a persistent VoxCPM2 or CosyVoice3 backend, the same loaded worker can
+also save text as WAV without a second model process:
+
+```bash
+.venv/bin/python utils/listenerctl.py tts-file render \
+  --text '😌 A calm recorded message.' --filename calm-message --wait
+```
+
+The renderer has a bounded queue, writes atomically below
+`speaker.file_render.output_dir`, and uses the same leading-emoji style
+allowlist as spoken replies. Install the `listener-tts-file` OpenClaw skill to
+let the model invoke this path. Details and API endpoints are in
+[docs/neural-tts.md](docs/neural-tts.md#render-wav-files-without-another-tts-process).
 
 On Linux the default playback path prefers `paplay` when it is available. That
 keeps the Speaker stream visible to PulseAudio/PipeWire with stable

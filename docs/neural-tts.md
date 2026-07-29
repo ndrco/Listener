@@ -5,7 +5,9 @@
 Listener can use VoxCPM2 or Fun-CosyVoice3-0.5B as the primary Speaker
 backend. Both integrations keep the model in a persistent child process,
 stream raw PCM to Listener over stdio, and fall back to Piper if startup or
-generation fails. The checked-in default remains Piper.
+generation fails. The same worker can also render WAV files requested through
+Listener's control API, without loading a second model process. The checked-in
+default remains Piper.
 
 This is an optional installation. Complete the base setup in
 [`INSTALL.md`](../INSTALL.md) first.
@@ -243,6 +245,14 @@ absolute path, and select exactly one `tts.backend`:
         "default_style": "neutral"
       }
     },
+    "file_render": {
+      "enabled": true,
+      "output_dir": "state/tts-files",
+      "max_text_chars": 5000,
+      "max_pending_jobs": 8,
+      "max_completed_jobs": 128,
+      "segment_chars": 220
+    },
     "voxcpm2": {
       "python": "/opt/listener-tts/VoxCPM2/env/bin/python",
       "model_path": "/opt/listener-tts/VoxCPM2/models/VoxCPM2",
@@ -322,6 +332,64 @@ service, use:
 ```bash
 journalctl --user -u listener.service -f
 ```
+
+## Render WAV files without another TTS process
+
+When Listener is already running with `tts_mode="persistent"` and the selected
+backend is `voxcpm2` or `cosyvoice3`, its control API can queue file-render jobs:
+
+```bash
+.venv/bin/python utils/listenerctl.py tts-file render \
+  --text '😔 Иногда тишина всё объясняет.' \
+  --filename quiet-thought \
+  --wait
+```
+
+The completed response prints an absolute WAV `path`. Longer input may be read
+from a UTF-8 file with `--text-file`. Job controls are:
+
+```bash
+.venv/bin/python utils/listenerctl.py tts-file list
+.venv/bin/python utils/listenerctl.py tts-file status JOB_ID
+.venv/bin/python utils/listenerctl.py tts-file cancel JOB_ID
+```
+
+The corresponding authenticated control endpoints are:
+
+```text
+POST /tts/files
+GET  /tts/files
+GET  /tts/files/{job_id}
+POST /tts/files/{job_id}/cancel
+```
+
+`POST /tts/files` accepts `text`, optional allowlisted `style`, and optional
+`filename`. `filename` is only a label: Listener removes path components,
+adds a unique suffix, and always writes below `file_render.output_dir`. Output
+is first written as `.wav.part` and atomically renamed after the WAV header is
+finalized. Partial files are removed on failure or cancellation. Job metadata
+is in memory, only the newest `max_completed_jobs` terminal entries are kept,
+and all entries are cleared by a Listener restart. Completed WAV files remain
+until the user removes or archives them.
+
+This path shares the existing `NeuralWorkerClient`; it does not spawn another
+VoxCPM2/CosyVoice3 worker and adds no second copy of the model in RAM or VRAM.
+If the worker was still lazy, the first job pays the normal model load/warm-up
+cost. Disk use for mono PCM16 is approximately 2.75 MiB/min at CosyVoice3's
+24 kHz or 5.49 MiB/min at VoxCPM2's 48 kHz, plus a 44-byte WAV header.
+
+One file job runs at a time. Long text is split into bounded speech segments
+and releases the shared generation lock between them, so queued reply playback
+can run before the next file segment. An individual in-progress model segment
+is not preempted. Playback cancellation is scoped separately from file-job
+cancellation, preventing one operation from corrupting the other's persistent
+stdio stream. File rendering deliberately uses only the selected neural
+backend: it reports a failed job instead of silently saving a Piper fallback
+under a neural-backend label.
+
+Install `openclaw/skills/listener-tts-file` together with `listener-control` to
+let OpenClaw create these files. The skill calls the control API and explicitly
+forbids starting either isolated model environment directly.
 
 ## Emoji-to-style instructions
 

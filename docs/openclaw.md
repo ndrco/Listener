@@ -2,18 +2,21 @@
 
 [Русская версия](openclaw_RUS.md)
 
-Listener integrates with OpenClaw in two directions:
+Listener integrates with OpenClaw in several directions:
 
 1. Accepted voice phrases are sent to OpenClaw through `openclaw gateway call chat.send`.
 2. OpenClaw can control Listener's SpeechGate mode through the bundled
    `listener-control` workspace skill and `utils/listenerctl.py`.
 3. Listener can voice OpenClaw replies locally through the integrated Speaker
    agent and lets OpenClaw toggle spoken replies on or off.
+4. OpenClaw can ask the running neural TTS worker to save text as a local WAV
+   file through the bundled `listener-tts-file` skill.
 
 The reply path is:
 
 ```text
-OpenClaw Gateway chat events -> SpeakerAgent -> Piper -> local audio playback
+OpenClaw Gateway chat events -> SpeakerAgent -> selected TTS -> local audio playback
+OpenClaw skill -> Listener control API -> existing neural worker -> WAV file
 ```
 
 ## Sending Voice Phrases to OpenClaw
@@ -79,6 +82,10 @@ POST /speech-gate/mode
 POST /speech-gate/reset
 GET  /speaker/status
 POST /speaker/enabled
+POST /tts/files
+GET  /tts/files
+GET  /tts/files/{job_id}
+POST /tts/files/{job_id}/cancel
 ```
 
 Example:
@@ -99,6 +106,9 @@ curl -s -X POST http://127.0.0.1:18790/speech-gate/reset \
 curl -s -X POST http://127.0.0.1:18790/speaker/enabled \
   -H 'Content-Type: application/json' \
   -d '{"enabled":false,"source":"curl","reason":"quiet"}' | jq
+curl -s -X POST http://127.0.0.1:18790/tts/files \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"😔 Иногда тишина всё объясняет.","filename":"thought"}' | jq
 ```
 
 `POST /speech-gate/reset` is a recovery endpoint for the rare case where a
@@ -223,7 +233,7 @@ From the Listener repository:
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-for skill in listener-control listener-speaker-off; do
+for skill in listener-control listener-speaker-off listener-tts-file; do
   rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
   cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
 done
@@ -288,6 +298,9 @@ OpenClaw `runId`; abort, error, finalization, and barge-in clear run state.
 .venv/bin/python utils/listenerctl.py speaker status
 .venv/bin/python utils/listenerctl.py speaker off
 .venv/bin/python utils/listenerctl.py speaker on
+.venv/bin/python utils/listenerctl.py tts-file render \
+  --text '🙂 Добро пожаловать!' --filename welcome --wait
+.venv/bin/python utils/listenerctl.py tts-file list
 ```
 
 `listenerctl` reads:
@@ -305,6 +318,30 @@ OpenClaw `TOOLS.md`, or Listener `config/config.json` before delegating to
 
 If the control API is exposed on anything other than loopback, configure a
 non-empty `control.token`.
+
+## OpenClaw File-render Skill
+
+The bundled `listener-tts-file` skill creates WAV files through the already
+running VoxCPM2 or CosyVoice3 worker. It delegates discovery of Listener home,
+control URL and token to the installed `listener-control` helper. It never
+activates a model environment or starts a second worker.
+
+Typical skill command:
+
+```bash
+openclaw/skills/listener-tts-file/scripts/listener-tts-file render \
+  --text '😌 Спокойный текст для записи.' \
+  --filename calm-note \
+  --wait --json
+```
+
+On completion, the returned job contains `output_path`. A leading allowlisted
+emoji selects the same fixed safe style instruction as live replies. An
+explicit style can be selected with `--style calm`; arbitrary instructions are
+not accepted. The output directory, text limit, queue limit and segment size
+are configured under `speaker.file_render`. See
+[`neural-tts.md`](neural-tts.md#render-wav-files-without-another-tts-process)
+for lifecycle, scheduling, disk overhead and failure behavior.
 
 ## Speaker Control Skill Mapping
 

@@ -12,6 +12,11 @@ from urllib.parse import urlsplit
 
 from audio.ducking import restore_all_ducking
 from core.config import cfg
+from speaker.file_renderer import (
+    TTSFileRenderBusy,
+    TTSFileRenderNotFound,
+    TTSFileRenderUnavailable,
+)
 
 if TYPE_CHECKING:
     from agents.speech_gate_agent import SpeechGateAgent
@@ -131,6 +136,20 @@ class ControlAgent:
                 await self._handle_speaker_status(writer)
             elif method == "POST" and path == "/speaker/enabled":
                 await self._handle_speaker_enabled(writer, body)
+            elif method == "POST" and path == "/tts/files":
+                await self._handle_tts_file_create(writer, body)
+            elif method == "GET" and path == "/tts/files":
+                await self._handle_tts_file_list(writer)
+            elif method == "GET" and self._tts_file_job_id(path) is not None:
+                await self._handle_tts_file_status(
+                    writer,
+                    self._tts_file_job_id(path) or "",
+                )
+            elif method == "POST" and self._tts_file_cancel_job_id(path) is not None:
+                await self._handle_tts_file_cancel(
+                    writer,
+                    self._tts_file_cancel_job_id(path) or "",
+                )
             else:
                 await self._send_json(writer, 404, {"ok": False, "error": "not_found"})
         except Exception:
@@ -158,6 +177,10 @@ class ControlAgent:
                     "speech_gate_reset": "POST /speech-gate/reset",
                     "speaker_status": "GET /speaker/status",
                     "speaker_enabled": "POST /speaker/enabled",
+                    "tts_file_create": "POST /tts/files",
+                    "tts_file_list": "GET /tts/files",
+                    "tts_file_status": "GET /tts/files/{job_id}",
+                    "tts_file_cancel": "POST /tts/files/{job_id}/cancel",
                 },
             },
         )
@@ -381,6 +404,131 @@ class ControlAgent:
         )
         await self._send_json(writer, 200, {"ok": True, "speaker": status})
 
+    async def _handle_tts_file_create(
+        self,
+        writer: asyncio.StreamWriter,
+        body: bytes,
+    ) -> None:
+        method = getattr(self._speaker, "create_tts_file", None)
+        if not callable(method):
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "tts_file_render_unavailable"},
+            )
+            return
+        try:
+            payload = json.loads(body.decode("utf-8") if body else "{}")
+        except json.JSONDecodeError:
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_json"})
+            return
+        if not isinstance(payload, dict):
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_payload"})
+            return
+        text = payload.get("text")
+        style = payload.get("style")
+        filename = payload.get("filename")
+        if not isinstance(text, str):
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_text"})
+            return
+        if style is not None and not isinstance(style, str):
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_style"})
+            return
+        if filename is not None and not isinstance(filename, str):
+            await self._send_json(writer, 400, {"ok": False, "error": "invalid_filename"})
+            return
+        try:
+            job = method(text, style=style, filename=filename)
+            if asyncio.iscoroutine(job):
+                job = await job
+        except ValueError as exc:
+            await self._send_json(writer, 400, {"ok": False, "error": str(exc)})
+            return
+        except TTSFileRenderBusy as exc:
+            await self._send_json(writer, 409, {"ok": False, "error": str(exc)})
+            return
+        except TTSFileRenderUnavailable as exc:
+            await self._send_json(writer, 503, {"ok": False, "error": str(exc)})
+            return
+        await self._send_json(writer, 202, {"ok": True, "job": job})
+
+    async def _handle_tts_file_list(self, writer: asyncio.StreamWriter) -> None:
+        method = getattr(self._speaker, "list_tts_files", None)
+        if not callable(method):
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "tts_file_render_unavailable"},
+            )
+            return
+        jobs = method()
+        if asyncio.iscoroutine(jobs):
+            jobs = await jobs
+        await self._send_json(writer, 200, {"ok": True, "jobs": jobs})
+
+    async def _handle_tts_file_status(
+        self,
+        writer: asyncio.StreamWriter,
+        job_id: str,
+    ) -> None:
+        method = getattr(self._speaker, "get_tts_file", None)
+        if not callable(method):
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "tts_file_render_unavailable"},
+            )
+            return
+        try:
+            job = method(job_id)
+            if asyncio.iscoroutine(job):
+                job = await job
+        except TTSFileRenderNotFound as exc:
+            await self._send_json(writer, 404, {"ok": False, "error": str(exc)})
+            return
+        await self._send_json(writer, 200, {"ok": True, "job": job})
+
+    async def _handle_tts_file_cancel(
+        self,
+        writer: asyncio.StreamWriter,
+        job_id: str,
+    ) -> None:
+        method = getattr(self._speaker, "cancel_tts_file", None)
+        if not callable(method):
+            await self._send_json(
+                writer,
+                503,
+                {"ok": False, "error": "tts_file_render_unavailable"},
+            )
+            return
+        try:
+            job = method(job_id)
+            if asyncio.iscoroutine(job):
+                job = await job
+        except TTSFileRenderNotFound as exc:
+            await self._send_json(writer, 404, {"ok": False, "error": str(exc)})
+            return
+        await self._send_json(writer, 200, {"ok": True, "job": job})
+
+    @staticmethod
+    def _tts_file_job_id(path: str) -> str | None:
+        parts = str(path or "").strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["tts", "files"] and parts[2]:
+            return parts[2]
+        return None
+
+    @staticmethod
+    def _tts_file_cancel_job_id(path: str) -> str | None:
+        parts = str(path or "").strip("/").split("/")
+        if (
+            len(parts) == 4
+            and parts[:2] == ["tts", "files"]
+            and parts[2]
+            and parts[3] == "cancel"
+        ):
+            return parts[2]
+        return None
+
     async def _read_request(
         self, reader: asyncio.StreamReader
     ) -> tuple[str, str, dict[str, str], bytes] | None:
@@ -456,9 +604,11 @@ class ControlAgent:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         reason = {
             200: "OK",
+            202: "Accepted",
             400: "Bad Request",
             401: "Unauthorized",
             404: "Not Found",
+            409: "Conflict",
             413: "Payload Too Large",
             500: "Internal Server Error",
             503: "Service Unavailable",

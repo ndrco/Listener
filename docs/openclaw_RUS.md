@@ -10,11 +10,14 @@ Listener интегрируется с OpenClaw в нескольких напр
    рабочего пространства `listener-control` и `utils/listenerctl.py`.
 3. Listener может озвучивать ответы OpenClaw локально через встроенного агента Speaker и
    позволяет OpenClaw включать и выключать голосовые ответы.
+4. OpenClaw может попросить уже запущенный нейронный TTS worker сохранить текст в
+   локальный WAV через навык `listener-tts-file`.
 
 Путь ответа:
 
 ```text
-OpenClaw Gateway chat events -> SpeakerAgent -> Piper -> local audio playback
+OpenClaw Gateway chat events -> SpeakerAgent -> selected TTS -> local audio playback
+OpenClaw skill -> Listener control API -> existing neural worker -> WAV file
 ```
 
 ## Отправка голосовых фраз на OpenClaw
@@ -79,6 +82,10 @@ POST /speech-gate/mode
 POST /speech-gate/reset
 GET  /speaker/status
 POST /speaker/enabled
+POST /tts/files
+GET  /tts/files
+GET  /tts/files/{job_id}
+POST /tts/files/{job_id}/cancel
 ```
 
 Пример:
@@ -99,6 +106,9 @@ curl -s -X POST http://127.0.0.1:18790/speech-gate/reset \
 curl -s -X POST http://127.0.0.1:18790/speaker/enabled \
   -H 'Content-Type: application/json' \
   -d '{"enabled":false,"source":"curl","reason":"quiet"}' | jq
+curl -s -X POST http://127.0.0.1:18790/tts/files \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"😔 Иногда тишина всё объясняет.","filename":"thought"}' | jq
 ```
 
 `POST /speech-gate/reset` — endpoint восстановления для редкого случая, когда
@@ -229,7 +239,7 @@ OpenClaw, но не произносится локально.
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-for skill in listener-control listener-speaker-off; do
+for skill in listener-control listener-speaker-off listener-tts-file; do
   rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
   cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
 done
@@ -295,6 +305,9 @@ sed -n '1,$p' openclaw/prompts/listener-tts-style.md >> "$OPENCLAW_WORKSPACE/AGE
 .venv/bin/python utils/listenerctl.py speaker status
 .venv/bin/python utils/listenerctl.py speaker off
 .venv/bin/python utils/listenerctl.py speaker on
+.venv/bin/python utils/listenerctl.py tts-file render \
+  --text '🙂 Добро пожаловать!' --filename welcome --wait
+.venv/bin/python utils/listenerctl.py tts-file list
 ```
 
 `listenerctl` читает переменные:
@@ -312,6 +325,30 @@ Listener `config/config.json` перед делегированием `listenerc
 
 Если API управления доступен не только через loopback-интерфейс, настройте непустой
 `control.token`.
+
+## Навык OpenClaw для файлового рендера
+
+Входящий в комплект навык `listener-tts-file` создаёт WAV через уже работающий worker
+VoxCPM2 или CosyVoice3. Для поиска корня Listener, URL control API и токена он использует
+установленный helper `listener-control`. Навык не активирует окружение модели и не
+запускает второй worker.
+
+Типичная команда навыка:
+
+```bash
+openclaw/skills/listener-tts-file/scripts/listener-tts-file render \
+  --text '😌 Спокойный текст для записи.' \
+  --filename calm-note \
+  --wait --json
+```
+
+После завершения задача содержит `output_path`. Ведущий эмодзи из разрешённого списка
+выбирает ту же фиксированную безопасную инструкцию стиля, что и для обычных ответов.
+Стиль можно задать явно через `--style calm`; произвольные инструкции не принимаются.
+Каталог вывода, лимит текста, размер очереди и сегмента настраиваются в
+`speaker.file_render`. Жизненный цикл, планирование, расход диска и поведение при ошибке
+описаны в разделе
+[`neural-tts_RUS.md`](neural-tts_RUS.md#создание-wav-без-второго-tts-процесса).
 
 ## Соответствие команд навыка управления Speaker
 

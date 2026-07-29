@@ -268,7 +268,7 @@ openclaw gateway call chat.send
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-for skill in listener-control listener-speaker-off; do
+for skill in listener-control listener-speaker-off listener-tts-file; do
   rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
   cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
 done
@@ -317,6 +317,11 @@ EOF
 - «вернуться к обычному режиму прослушивания» -> `normal`
 - "включить активное прослушивание" -> `chatty --ttl 600`
 - "выключить активное прослушивание" -> `mute`
+
+При постоянном бэкенде VoxCPM2 или CosyVoice3 навык `listener-tts-file` позволяет
+OpenClaw сохранять текст в WAV через уже существующий worker Listener. Для поиска
+локального пути, URL и токена он использует установленный helper `listener-control`.
+См. [docs/neural-tts_RUS.md](docs/neural-tts_RUS.md#создание-wav-без-второго-tts-процесса).
 
 Listener также автоматически считывает имя помощника OpenClaw из файла идентификации
 области OpenClaw `IDENTITY.md`. Поддерживаемые ключи: `Name:` и `Имя:`.

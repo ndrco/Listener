@@ -81,6 +81,16 @@ class TTSConfig:
 
 
 @dataclass(slots=True)
+class TTSFileRenderConfig:
+    enabled: bool = True
+    output_dir: str = "state/tts-files"
+    max_text_chars: int = 5000
+    max_pending_jobs: int = 8
+    max_completed_jobs: int = 128
+    segment_chars: int = 220
+
+
+@dataclass(slots=True)
 class VoxCPM2Config:
     python: str = "/home/re/src/TTS test/VoxCPM2/.mamba/envs/.venv/bin/python"
     model_path: str = "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2"
@@ -173,6 +183,7 @@ class SpeakerConfig:
     enabled: bool = False
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
+    file_render: TTSFileRenderConfig = field(default_factory=TTSFileRenderConfig)
     piper: PiperConfig = field(default_factory=PiperConfig)
     voxcpm2: VoxCPM2Config = field(default_factory=VoxCPM2Config)
     cosyvoice3: CosyVoice3Config = field(default_factory=CosyVoice3Config)
@@ -220,6 +231,7 @@ class SpeakerConfig:
             "enabled",
             "gateway",
             "tts",
+            "file_render",
             "piper",
             "voxcpm2",
             "cosyvoice3",
@@ -239,6 +251,7 @@ class SpeakerConfig:
             enabled=_parse_bool_value(data.get("enabled"), self.enabled),
             gateway=_merge_dataclass(self.gateway, data.get("gateway")),
             tts=_merge_dataclass(self.tts, data.get("tts")),
+            file_render=_merge_dataclass(self.file_render, data.get("file_render")),
             piper=_merge_dataclass(self.piper, data.get("piper")),
             voxcpm2=_merge_dataclass(self.voxcpm2, data.get("voxcpm2")),
             cosyvoice3=_merge_dataclass(self.cosyvoice3, data.get("cosyvoice3")),
@@ -250,6 +263,7 @@ class SpeakerConfig:
     def apply_env(self) -> "SpeakerConfig":
         gateway = self.gateway
         tts = self.tts
+        file_render = self.file_render
         piper = self.piper
         voxcpm2 = self.voxcpm2
         cosyvoice3 = self.cosyvoice3
@@ -280,6 +294,13 @@ class SpeakerConfig:
             tts = replace(tts, backend=tts_backend)
         if fallback_backend := os.getenv("SPEAKER_TTS_FALLBACK_BACKEND"):
             tts = replace(tts, fallback_backend=fallback_backend)
+        if file_render_enabled := os.getenv("SPEAKER_TTS_FILE_RENDER_ENABLED"):
+            file_render = replace(
+                file_render,
+                enabled=_parse_bool_value(file_render_enabled, file_render.enabled),
+            )
+        if output_dir := os.getenv("SPEAKER_TTS_FILE_OUTPUT_DIR"):
+            file_render = replace(file_render, output_dir=output_dir)
         if command := os.getenv("SPEAKER_PIPER_COMMAND"):
             piper = replace(piper, command=command)
         if model := os.getenv("SPEAKER_PIPER_MODEL"):
@@ -355,6 +376,7 @@ class SpeakerConfig:
             enabled=enabled_value,
             gateway=gateway,
             tts=_normalize_tts_config(tts),
+            file_render=_normalize_file_render_config(file_render),
             piper=piper,
             voxcpm2=_normalize_voxcpm2_config(voxcpm2),
             cosyvoice3=_normalize_cosyvoice3_config(cosyvoice3),
@@ -422,6 +444,17 @@ def _merge_dataclass(current: Any, raw: Any) -> Any:
                 values[key] = float(values[key])
         if "max_consecutive_errors" in values:
             values["max_consecutive_errors"] = int(values["max_consecutive_errors"])
+    if isinstance(current, TTSFileRenderConfig):
+        if "enabled" in values:
+            values["enabled"] = _parse_bool_value(values["enabled"], current.enabled)
+        for key in (
+            "max_text_chars",
+            "max_pending_jobs",
+            "max_completed_jobs",
+            "segment_chars",
+        ):
+            if key in values:
+                values[key] = int(values[key])
     if isinstance(current, (VoxCPM2Config, CosyVoice3Config)):
         for key in ("local_files_only",):
             if key in values:
@@ -460,6 +493,8 @@ def _merge_dataclass(current: Any, raw: Any) -> Any:
         return _normalize_emoji_display_config(updated)
     if isinstance(updated, TTSConfig):
         return _normalize_tts_config(updated)
+    if isinstance(updated, TTSFileRenderConfig):
+        return _normalize_file_render_config(updated)
     if isinstance(updated, VoxCPM2Config):
         return _normalize_voxcpm2_config(updated)
     if isinstance(updated, CosyVoice3Config):
@@ -493,6 +528,19 @@ def _normalize_tts_config(config: TTSConfig) -> TTSConfig:
             leading_emoji_only=bool(style.leading_emoji_only),
             default_style=default_style,
         ),
+    )
+
+
+def _normalize_file_render_config(config: TTSFileRenderConfig) -> TTSFileRenderConfig:
+    output_dir = str(config.output_dir or "state/tts-files").strip() or "state/tts-files"
+    return replace(
+        config,
+        enabled=bool(config.enabled),
+        output_dir=output_dir,
+        max_text_chars=max(1, min(65536, int(config.max_text_chars))),
+        max_pending_jobs=max(1, min(128, int(config.max_pending_jobs))),
+        max_completed_jobs=max(1, min(10000, int(config.max_completed_jobs))),
+        segment_chars=max(40, min(1000, int(config.segment_chars))),
     )
 
 

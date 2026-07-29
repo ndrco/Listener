@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 from agents.control_agent import ControlAgent  # noqa: E402
 from core.config import cfg  # noqa: E402
 from llm.speech_gate import SpeechGateMode  # noqa: E402
+from speaker.file_renderer import TTSFileRenderNotFound  # noqa: E402
 from utils.listenerctl import request_json  # noqa: E402
 
 
@@ -57,6 +58,7 @@ class FakeSpeaker:
         self.enabled = True
         self.calls: list[dict] = []
         self.interrupt_calls: list[dict] = []
+        self.tts_file_jobs: dict[str, dict] = {}
 
     def get_status(self) -> dict:
         return {
@@ -82,6 +84,33 @@ class FakeSpeaker:
     async def interrupt(self, *, reason="api", run_id=None) -> int:
         self.interrupt_calls.append({"reason": reason, "run_id": run_id})
         return 2
+
+    async def create_tts_file(self, text, *, style=None, filename=None) -> dict:
+        job = {
+            "id": "job-1",
+            "state": "queued",
+            "backend": "cosyvoice3",
+            "style_id": style or "neutral",
+            "filename": filename or "tts-job-1.wav",
+            "output_path": None,
+            "text_chars": len(text),
+        }
+        self.tts_file_jobs[job["id"]] = job
+        return dict(job)
+
+    def get_tts_file(self, job_id) -> dict:
+        if job_id not in self.tts_file_jobs:
+            raise TTSFileRenderNotFound(f"unknown TTS file render job: {job_id}")
+        return dict(self.tts_file_jobs[job_id])
+
+    def list_tts_files(self) -> list[dict]:
+        return [dict(job) for job in self.tts_file_jobs.values()]
+
+    async def cancel_tts_file(self, job_id) -> dict:
+        job = self.get_tts_file(job_id)
+        job["state"] = "cancelled"
+        self.tts_file_jobs[job_id] = job
+        return dict(job)
 
 
 def _save_control_cfg() -> tuple:
@@ -223,6 +252,84 @@ def test_control_agent_speaker_status_and_enabled_api():
             )
             assert status_code == 400
             assert data["error"] == "invalid_enabled"
+        finally:
+            await agent.close()
+            _restore_control_cfg(saved)
+
+    asyncio.run(_runner())
+
+
+def test_control_agent_tts_file_job_api():
+    async def _runner() -> None:
+        saved = _save_control_cfg()
+        cfg.control.enabled = True
+        cfg.control.host = "127.0.0.1"
+        cfg.control.port = 0
+        cfg.control.token = None
+        speaker = FakeSpeaker()
+        agent = ControlAgent(
+            speech_gate=FakeSpeechGate(),  # type: ignore[arg-type]
+            speaker=speaker,
+        )
+        try:
+            await agent.start()
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/tts/files",
+                method="POST",
+                payload={
+                    "text": "😔 Тестовая фраза.",
+                    "style": "sad",
+                    "filename": "test",
+                },
+            )
+            assert status_code == 202
+            assert data["job"]["id"] == "job-1"
+            assert data["job"]["style_id"] == "sad"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/tts/files/job-1",
+            )
+            assert status_code == 200
+            assert data["job"]["state"] == "queued"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/tts/files/job-1/cancel",
+                method="POST",
+            )
+            assert status_code == 200
+            assert data["job"]["state"] == "cancelled"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/tts/files",
+            )
+            assert status_code == 200
+            assert data["jobs"][0]["id"] == "job-1"
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/tts/files/missing",
+            )
+            assert status_code == 404
+            assert data["ok"] is False
+
+            status_code, data = await asyncio.to_thread(
+                request_json,
+                agent.base_url,
+                "/tts/files",
+                method="POST",
+                payload={"text": 123},
+            )
+            assert status_code == 400
+            assert data["error"] == "invalid_text"
         finally:
             await agent.close()
             _restore_control_cfg(saved)
