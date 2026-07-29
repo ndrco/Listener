@@ -48,7 +48,7 @@ class NeuralWorkerClient:
         self,
         command: Sequence[str],
         *,
-        startup_timeout_s: float = 45.0,
+        startup_timeout_s: float = 90.0,
         generation_timeout_s: float = 120.0,
         cancel_timeout_s: float = 1.0,
         env: Mapping[str, str] | None = None,

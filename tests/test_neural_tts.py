@@ -169,6 +169,10 @@ def test_fallback_opens_circuit_after_consecutive_errors():
 
         assert primary.calls == 2
         assert fallback.requests == [request, request, request]
-        assert engine.get_status()["circuit_open"] is True
+        status = engine.get_status()
+        assert status["backend"] == "fallback"
+        assert status["active_backend"] == "fallback"
+        assert status["using_fallback"] is True
+        assert status["circuit_open"] is True
 
     asyncio.run(_run())
