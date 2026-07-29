@@ -219,14 +219,22 @@ class FallbackSpeechEngine:
         )
 
     def get_status(self) -> dict[str, Any]:
+        primary = _maybe_status(self.primary)
+        fallback = _maybe_status(self.fallback)
+        primary_backend = _status_backend(primary, default="primary")
+        fallback_backend = _status_backend(fallback, default="fallback")
         return {
+            # Retained for API compatibility: this engine wraps the selected
+            # neural backend with a fallback backend.
             "backend": "fallback",
+            "active_backend": fallback_backend if self._circuit_open else primary_backend,
+            "using_fallback": self._circuit_open,
             "circuit_open": self._circuit_open,
             "consecutive_errors": self._consecutive_errors,
             "max_consecutive_errors": self.max_consecutive_errors,
             "last_error": self._last_error or None,
-            "primary": _maybe_status(self.primary),
-            "fallback": _maybe_status(self.fallback),
+            "primary": primary,
+            "fallback": fallback,
         }
 
 
@@ -245,6 +253,12 @@ async def _maybe_close(engine: SpeechEngine) -> None:
 def _maybe_status(engine: SpeechEngine) -> dict | None:
     method = getattr(engine, "get_status", None)
     return method() if callable(method) else None
+
+
+def _status_backend(status: dict | None, *, default: str) -> str:
+    if not status:
+        return default
+    return str(status.get("backend") or default)
 
 
 __all__ = ["FallbackSpeechEngine", "NeuralSpeechEngine"]

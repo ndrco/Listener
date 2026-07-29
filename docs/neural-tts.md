@@ -232,7 +232,7 @@ absolute path, and select exactly one `tts.backend`:
     "tts": {
       "backend": "voxcpm2",
       "fallback_backend": "piper",
-      "startup_timeout_s": 45,
+      "startup_timeout_s": 90,
       "generation_timeout_s": 120,
       "cancel_timeout_s": 1,
       "max_consecutive_errors": 3,

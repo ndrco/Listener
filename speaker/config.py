@@ -73,7 +73,7 @@ class SpeechStyleConfig:
 class TTSConfig:
     backend: str = "piper"
     fallback_backend: str = "piper"
-    startup_timeout_s: float = 45.0
+    startup_timeout_s: float = 90.0
     generation_timeout_s: float = 120.0
     cancel_timeout_s: float = 1.0
     max_consecutive_errors: int = 3
