@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,8 @@ from utils.listenerctl import (  # noqa: E402
     format_speech_gate_reset_status,
     format_speaker_status,
     format_speech_gate_status,
+    main,
+    request_json,
 )
 
 
@@ -127,6 +130,29 @@ def test_listenerctl_service_commands_parse():
     assert nested_reset.resource == "speech-gate"
     assert nested_reset.action == "reset"
     assert nested_reset.json is True
+
+
+def test_listenerctl_reset_uses_extended_timeout(capsys):
+    response = {
+        "ok": True,
+        "speech_gate": {"mode": "normal"},
+        "speaker": {"enabled": True},
+        "ducking": {},
+        "dropped": 0,
+    }
+    with patch("utils.listenerctl.request_json", return_value=(200, response)) as request:
+        assert main(["speech-gate-reset", "--reason", "acceptance"]) == 0
+
+    assert request.call_args.kwargs["timeout"] == 30.0
+    assert "speech_gate_reset=ok" in capsys.readouterr().out
+
+
+def test_listenerctl_request_timeout_is_reported_without_traceback():
+    with patch("utils.listenerctl.urlopen", side_effect=TimeoutError("timed out")):
+        status, data = request_json("http://127.0.0.1:18790", "/health")
+
+    assert status == 0
+    assert data == {"ok": False, "error": "connection_failed: timed out"}
 
 
 def test_listenerctl_formats_permanent_status():

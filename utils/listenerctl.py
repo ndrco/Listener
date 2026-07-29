@@ -158,6 +158,8 @@ def request_json(
         return exc.code, _decode_json(exc.read())
     except URLError as exc:
         return 0, {"ok": False, "error": f"connection_failed: {exc.reason}"}
+    except (TimeoutError, OSError) as exc:
+        return 0, {"ok": False, "error": f"connection_failed: {exc}"}
 
 
 def _decode_json(data: bytes) -> dict[str, Any]:
@@ -372,6 +374,10 @@ def main(argv: list[str] | None = None) -> int:
                 "source": args.source,
                 "reason": args.reason or "speech_gate_reset",
             },
+            # Neural workers may finish their current inference chunk before
+            # acknowledging cancellation.  Reset is intentionally synchronous,
+            # so allow more time than ordinary status and mode requests.
+            timeout=30.0,
         )
         _print_reset_response(data, raw_json=args.json)
         return 0 if 200 <= status < 300 and data.get("ok") else 1
