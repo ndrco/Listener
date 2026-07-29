@@ -7,9 +7,12 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 DEFAULT_CONTROL_URL = "http://127.0.0.1:18790"
@@ -104,6 +107,44 @@ def build_parser() -> argparse.ArgumentParser:
         voice_alias = subparsers.add_parser(alias, help=f"Shortcut for: speaker {'on' if enabled else 'off'}.")
         add_reason_source_json_options(voice_alias)
         voice_alias.set_defaults(resource="speaker", action="enabled", enabled=enabled)
+
+    tts_file = subparsers.add_parser(
+        "tts-file",
+        help="Render WAV files through Listener's active neural TTS worker.",
+    )
+    tts_file_subparsers = tts_file.add_subparsers(dest="action", required=True)
+
+    tts_render = tts_file_subparsers.add_parser("render", help="Queue a WAV render job.")
+    text_source = tts_render.add_mutually_exclusive_group(required=True)
+    text_source.add_argument("--text", help="Text to synthesize; a leading emoji selects style.")
+    text_source.add_argument("--text-file", help="Read UTF-8 text from this file.")
+    tts_render.add_argument("--style", help="Explicit allowlisted speaking style.")
+    tts_render.add_argument("--filename", help="Safe output filename label (not a path).")
+    tts_render.add_argument("--wait", action="store_true", help="Wait for a terminal job state.")
+    tts_render.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=600.0,
+        help="Maximum seconds to wait with --wait.",
+    )
+    tts_render.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        help="Status polling interval with --wait.",
+    )
+    tts_render.add_argument("--json", action="store_true", help="Print raw JSON response.")
+
+    tts_list = tts_file_subparsers.add_parser("list", help="List in-memory render jobs.")
+    tts_list.add_argument("--json", action="store_true", help="Print raw JSON response.")
+
+    tts_status = tts_file_subparsers.add_parser("status", help="Show a render job.")
+    tts_status.add_argument("job_id")
+    tts_status.add_argument("--json", action="store_true", help="Print raw JSON response.")
+
+    tts_cancel = tts_file_subparsers.add_parser("cancel", help="Cancel a render job.")
+    tts_cancel.add_argument("job_id")
+    tts_cancel.add_argument("--json", action="store_true", help="Print raw JSON response.")
 
     health = subparsers.add_parser("health", help="Check Listener control API liveness.")
     health.add_argument("--json", action="store_true", help="Print raw JSON response.")
@@ -269,6 +310,22 @@ def format_speech_gate_reset_status(data: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def format_tts_file_job(job: dict[str, Any]) -> str:
+    parts = [
+        f"tts_file={job.get('state', 'unknown')}",
+        f"id={job.get('id', '-')}",
+        f"backend={job.get('backend', '-')}",
+        f"style={job.get('style_id', '-')}",
+    ]
+    output_path = job.get("output_path")
+    if output_path:
+        parts.append(f"path={json.dumps(str(output_path), ensure_ascii=False)}")
+    error = job.get("error")
+    if error:
+        parts.append(f"error={json.dumps(str(error), ensure_ascii=False)}")
+    return " ".join(parts)
+
+
 def _format_seconds(value: Any) -> str:
     try:
         return f"{float(value):.1f}s"
@@ -343,6 +400,52 @@ def _print_reset_response(data: dict[str, Any], *, raw_json: bool) -> None:
     print(format_speech_gate_reset_status(data))
 
 
+def _print_tts_file_response(data: dict[str, Any], *, raw_json: bool) -> None:
+    if raw_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    if not data.get("ok"):
+        print(f"error: {data.get('error', 'unknown_error')}", file=sys.stderr)
+        return
+    job = data.get("job")
+    if isinstance(job, dict):
+        print(format_tts_file_job(job))
+        return
+    jobs = data.get("jobs")
+    if isinstance(jobs, list):
+        if not jobs:
+            print("no tts file jobs")
+            return
+        for item in jobs:
+            if isinstance(item, dict):
+                print(format_tts_file_job(item))
+        return
+    print("ok")
+
+
+def _wait_for_tts_file(
+    base_url: str,
+    job_id: str,
+    *,
+    token: str | None,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> tuple[int, dict[str, Any]]:
+    deadline = time.monotonic() + max(0.01, float(timeout_s))
+    path = f"/tts/files/{quote(job_id, safe='')}"
+    while True:
+        status, data = request_json(base_url, path, token=token)
+        if not (200 <= status < 300 and data.get("ok")):
+            return status, data
+        job = data.get("job")
+        state = job.get("state") if isinstance(job, dict) else None
+        if state in {"completed", "failed", "cancelled"}:
+            return status, data
+        if time.monotonic() >= deadline:
+            return 0, {"ok": False, "error": "wait_timeout", "job": job}
+        time.sleep(max(0.05, float(poll_interval_s)))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -401,6 +504,64 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         _print_speaker_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "tts-file" and args.action == "render":
+        try:
+            text_value = args.text
+            if args.text_file:
+                text_value = Path(args.text_file).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            print(f"error: unable to read text file: {exc}", file=sys.stderr)
+            return 1
+        payload: dict[str, Any] = {"text": text_value or ""}
+        if args.style:
+            payload["style"] = args.style
+        if args.filename:
+            payload["filename"] = args.filename
+        status, data = request_json(
+            args.url,
+            "/tts/files",
+            method="POST",
+            token=args.token,
+            payload=payload,
+            timeout=10.0,
+        )
+        if 200 <= status < 300 and data.get("ok") and args.wait:
+            job = data.get("job")
+            job_id = str(job.get("id") or "") if isinstance(job, dict) else ""
+            if not job_id:
+                status, data = 0, {"ok": False, "error": "missing_job_id"}
+            else:
+                status, data = _wait_for_tts_file(
+                    args.url,
+                    job_id,
+                    token=args.token,
+                    timeout_s=args.wait_timeout,
+                    poll_interval_s=args.poll_interval,
+                )
+        _print_tts_file_response(data, raw_json=args.json)
+        job = data.get("job")
+        state = job.get("state") if isinstance(job, dict) else None
+        success = 200 <= status < 300 and data.get("ok")
+        if args.wait:
+            success = success and state == "completed"
+        return 0 if success else 1
+
+    if args.resource == "tts-file" and args.action == "list":
+        status, data = request_json(args.url, "/tts/files", token=args.token)
+        _print_tts_file_response(data, raw_json=args.json)
+        return 0 if 200 <= status < 300 and data.get("ok") else 1
+
+    if args.resource == "tts-file" and args.action in {"status", "cancel"}:
+        suffix = "/cancel" if args.action == "cancel" else ""
+        status, data = request_json(
+            args.url,
+            f"/tts/files/{quote(args.job_id, safe='')}{suffix}",
+            method="POST" if args.action == "cancel" else "GET",
+            token=args.token,
+        )
+        _print_tts_file_response(data, raw_json=args.json)
         return 0 if 200 <= status < 300 and data.get("ok") else 1
 
     if args.resource == "service" and args.action == "health":

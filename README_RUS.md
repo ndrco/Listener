@@ -23,9 +23,9 @@
 - API управления SpeechGate во время работы и `utils/listenerctl.py`.
 - Дополнительные короткие звуковые индикаторы отклоненных, перенаправленных и локальных
   событий управления.
-- Встроенная локальная озвучка ответов OpenClaw через Speaker и Piper.
-- Входящий в комплект навык рабочего пространства OpenClaw:
-  `openclaw/skills/listener-control`.
+- Встроенная локальная озвучка через Piper, VoxCPM2 или CosyVoice3.
+- Файловая озвучка нейронным TTS в WAV через тот же worker без второго процесса модели.
+- Входящие в комплект навыки OpenClaw для управления Listener и создания WAV.
 
 ## Конвейер
 
@@ -38,7 +38,8 @@ Microphone -> AudioProcessor -> BufferedSpeechWriter -> WhisperStreamingTranscri
 Путь ответа, если голосовые ответы включены:
 
 ```text
-OpenClaw Gateway -> SpeakerAgent -> PiperSpeechEngine -> paplay
+OpenClaw Gateway -> SpeakerAgent -> SpeechEngine -> local playback
+OpenClaw skill   -> Control API  -> same neural worker -> WAV file
 ```
 
 Основные модули:
@@ -264,7 +265,7 @@ Piper. Самая простая автономная установка:
 ```bash
 OPENCLAW_WORKSPACE="$(openclaw config get agents.defaults.workspace)"
 mkdir -p "$OPENCLAW_WORKSPACE/skills"
-for skill in listener-control listener-speaker-off; do
+for skill in listener-control listener-speaker-off listener-tts-file; do
   rm -rf "$OPENCLAW_WORKSPACE/skills/$skill"
   cp -R "openclaw/skills/$skill" "$OPENCLAW_WORKSPACE/skills/"
 done
@@ -313,6 +314,20 @@ worker-процессы работают в изолированных пост�
 по умолчанию остаётся Piper. Установка отдельных сред, загрузка моделей, оценка
 ресурсов, настройка стилей и smoke-тесты описаны в
 [docs/neural-tts_RUS.md](docs/neural-tts_RUS.md).
+
+При постоянном бэкенде VoxCPM2 или CosyVoice3 тот же загруженный worker может сохранять
+текст в WAV без второго процесса модели:
+
+```bash
+.venv/bin/python utils/listenerctl.py tts-file render \
+  --text '😌 Спокойное сообщение для записи.' --filename calm-message --wait
+```
+
+Renderer использует ограниченную очередь, атомарно пишет внутрь
+`speaker.file_render.output_dir` и применяет тот же разрешённый список стилей по
+ведущему эмодзи, что и обычная озвучка. Чтобы модель OpenClaw вызывала этот путь,
+установите навык `listener-tts-file`. Подробности и маршруты API приведены в
+[docs/neural-tts_RUS.md](docs/neural-tts_RUS.md#создание-wav-без-второго-tts-процесса).
 
 В Linux путь воспроизведения по умолчанию предпочитает `paplay`, если он доступен.
 Благодаря этому поток Speaker остается видимым для PulseAudio/PipeWire со стабильными

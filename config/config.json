@@ -54,6 +54,14 @@
         "default_style": "neutral"
       }
     },
+    "file_render": {
+      "enabled": true,
+      "output_dir": "state/tts-files",
+      "max_text_chars": 5000,
+      "max_pending_jobs": 8,
+      "max_completed_jobs": 128,
+      "segment_chars": 220
+    },
     "voxcpm2": {
       "python": "/home/re/src/TTS test/VoxCPM2/.mamba/envs/.venv/bin/python",
       "model_path": "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2",

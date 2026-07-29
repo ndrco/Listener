@@ -132,6 +132,39 @@ def test_listenerctl_service_commands_parse():
     assert nested_reset.json is True
 
 
+def test_listenerctl_tts_file_commands_parse():
+    parser = build_parser()
+
+    render = parser.parse_args(
+        [
+            "tts-file",
+            "render",
+            "--text",
+            "😔 Тест.",
+            "--style",
+            "sad",
+            "--filename",
+            "test",
+            "--wait",
+            "--json",
+        ]
+    )
+    assert render.resource == "tts-file"
+    assert render.action == "render"
+    assert render.text == "😔 Тест."
+    assert render.style == "sad"
+    assert render.filename == "test"
+    assert render.wait is True
+
+    status = parser.parse_args(["tts-file", "status", "job-1"])
+    assert status.resource == "tts-file"
+    assert status.action == "status"
+    assert status.job_id == "job-1"
+
+    cancel = parser.parse_args(["tts-file", "cancel", "job-1"])
+    assert cancel.action == "cancel"
+
+
 def test_listenerctl_reset_uses_extended_timeout(capsys):
     response = {
         "ok": True,
@@ -145,6 +178,52 @@ def test_listenerctl_reset_uses_extended_timeout(capsys):
 
     assert request.call_args.kwargs["timeout"] == 30.0
     assert "speech_gate_reset=ok" in capsys.readouterr().out
+
+
+def test_listenerctl_tts_file_render_waits_for_completed_job(capsys):
+    queued = {
+        "ok": True,
+        "job": {
+            "id": "job-1",
+            "state": "queued",
+            "backend": "cosyvoice3",
+            "style_id": "sad",
+        },
+    }
+    completed = {
+        "ok": True,
+        "job": {
+            "id": "job-1",
+            "state": "completed",
+            "backend": "cosyvoice3",
+            "style_id": "sad",
+            "output_path": "/tmp/story.wav",
+        },
+    }
+    with patch(
+        "utils.listenerctl.request_json",
+        side_effect=[(202, queued), (200, completed)],
+    ) as request:
+        result = main(
+            [
+                "tts-file",
+                "render",
+                "--text",
+                "😔 Тест.",
+                "--filename",
+                "story",
+                "--wait",
+            ]
+        )
+
+    assert result == 0
+    assert request.call_count == 2
+    assert request.call_args_list[0].kwargs["payload"] == {
+        "text": "😔 Тест.",
+        "filename": "story",
+    }
+    assert request.call_args_list[1].args[1] == "/tts/files/job-1"
+    assert 'path="/tmp/story.wav"' in capsys.readouterr().out
 
 
 def test_listenerctl_request_timeout_is_reported_without_traceback():

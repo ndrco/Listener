@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Delegate file rendering to the Listener control skill discovery helper."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2] / "listener-control" / "scripts" / "listener-control",
+        Path.home()
+        / ".openclaw"
+        / "workspace"
+        / "skills"
+        / "listener-control"
+        / "scripts"
+        / "listener-control",
+    ]
+    helper = next((path for path in candidates if path.is_file()), None)
+    if helper is None:
+        print(
+            "error: listener-control helper not found; install the Listener listener-control skill",
+            file=sys.stderr,
+        )
+        return 1
+    return subprocess.call([sys.executable, str(helper), "tts-file", *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

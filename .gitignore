@@ -59,4 +59,5 @@ models/
 
 # Runtime state
 /state/*.json
+/state/tts-files/
 !/state/.gitkeep

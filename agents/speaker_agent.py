@@ -16,6 +16,7 @@ from core.runtime_state import RuntimeStateStore
 from speaker.config import SpeakerConfig
 from speaker.emoji import EmojiDisplayClient, EmojiToken, extract_emoji_for_speech
 from speaker.events import ChatSpeechRouter, SpeechSegment
+from speaker.file_renderer import TTSFileRenderer
 from speaker.gateway import GatewayClient, GatewayError
 from speaker.messages import ExtractedMessage, MessageDeduper, extract_latest_assistant_text
 from speaker.style import EmojiStyleResolver
@@ -406,6 +407,11 @@ class SpeakerAgent:
             ducking_config=self._config.playback.ducking if persistent_tts else None,
             style_resolver=EmojiStyleResolver(self._config.tts.style),
         )
+        self._file_renderer = TTSFileRenderer(
+            speech=self._speech,
+            config=self._config.file_render,
+            style_config=self._config.tts.style,
+        )
         self._running = False
         self._gateway_task: asyncio.Task[None] | None = None
         self._gateway: GatewayClient | None = None
@@ -421,6 +427,7 @@ class SpeakerAgent:
             return
         self._running = True
         await self._playback.start()
+        await self._file_renderer.start()
         if self._config.enabled:
             await _start_speech_engine(self._speech)
         if self._should_listen_to_gateway():
@@ -433,6 +440,7 @@ class SpeakerAgent:
         self._running = False
         self._config.enabled = False
         await self._stop_gateway_task()
+        await self._file_renderer.close()
         await self._playback.close()
         log.info("SpeakerAgent: stopped")
 
@@ -440,6 +448,24 @@ class SpeakerAgent:
         if not self._running:
             return 0
         return await self._playback.interrupt(reason=reason, run_id=run_id)
+
+    async def create_tts_file(
+        self,
+        text: str,
+        *,
+        style: str | None = None,
+        filename: str | None = None,
+    ) -> dict:
+        return await self._file_renderer.submit(text, style=style, filename=filename)
+
+    def get_tts_file(self, job_id: str) -> dict:
+        return self._file_renderer.get_job(job_id)
+
+    def list_tts_files(self) -> list[dict]:
+        return self._file_renderer.list_jobs()
+
+    async def cancel_tts_file(self, job_id: str) -> dict:
+        return await self._file_renderer.cancel(job_id)
 
     async def set_enabled(
         self,
@@ -484,6 +510,7 @@ class SpeakerAgent:
             "reason": self._enabled_reason,
             "emoji_display": self._emoji_display.get_status(),
             "playback": self._playback.get_status(),
+            "file_render": self._file_renderer.get_status(),
         }
 
     def _restore_runtime_state(self) -> None:

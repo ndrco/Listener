@@ -13,12 +13,12 @@ class FakeClient:
         self.closed = False
         self.requests = []
 
-    async def generate(self, request):
+    async def generate(self, request, *, owner="default"):
         self.requests.append(request)
         yield AudioChunk("req-1", 0, b"\x00\x00", 48000)
         yield AudioChunk("req-1", 1, b"\x01\x00", 48000)
 
-    async def cancel(self):
+    async def cancel(self, *, owner=None):
         self.cancelled = True
         return True
 
@@ -91,14 +91,14 @@ def test_neural_engine_drains_late_audio_after_interrupt_without_fallback_error(
             self.cancel_requested = asyncio.Event()
             self.drained = asyncio.Event()
 
-        async def generate(self, request):
+        async def generate(self, request, *, owner="default"):
             self.requests.append(request)
             yield AudioChunk("req-1", 0, b"\x00\x00", 48000)
             await self.cancel_requested.wait()
             yield AudioChunk("req-1", 1, b"\x01\x00", 48000)
             self.drained.set()
 
-        async def cancel(self):
+        async def cancel(self, *, owner=None):
             self.cancelled = True
             self.cancel_requested.set()
             await self.drained.wait()

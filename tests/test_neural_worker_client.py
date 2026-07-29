@@ -78,6 +78,86 @@ def test_cancel_keeps_persistent_worker_reusable():
     asyncio.run(_run())
 
 
+def test_cancel_can_be_scoped_to_generation_owner():
+    async def _run() -> None:
+        client = NeuralWorkerClient(
+            _command("--chunks", "100", "--chunk-delay-ms", "10"),
+            cancel_timeout_s=1.0,
+        )
+        first_chunk = asyncio.Event()
+
+        async def _consume() -> None:
+            async for _chunk in client.generate(
+                SpeechRequest("Файловый тест."),
+                owner="file:job-1",
+            ):
+                first_chunk.set()
+
+        try:
+            task = asyncio.create_task(_consume())
+            await asyncio.wait_for(first_chunk.wait(), timeout=1.0)
+            assert client.get_status()["active_owner"] == "file:job-1"
+            assert await client.cancel(owner="playback") is False
+            assert not task.done()
+            assert await client.cancel(owner="file:job-1") is True
+            await asyncio.wait_for(task, timeout=1.0)
+            assert client.get_status()["running"] is True
+        finally:
+            await client.close()
+
+    asyncio.run(_run())
+
+
+def test_cancelled_waiter_does_not_start_after_other_owner_finishes():
+    async def _run() -> None:
+        client = NeuralWorkerClient(
+            _command("--chunks", "5", "--chunk-delay-ms", "10"),
+            cancel_timeout_s=1.0,
+        )
+        playback_started = asyncio.Event()
+        file_cancelled = asyncio.Event()
+        file_chunks = []
+
+        async def _playback() -> None:
+            async for _chunk in client.generate(
+                SpeechRequest("Обычная реплика."),
+                owner="playback",
+            ):
+                playback_started.set()
+
+        async def _file() -> None:
+            async for chunk in client.generate(
+                SpeechRequest("Отменённый файл."),
+                owner="file:job-2",
+                cancellation_event=file_cancelled,
+            ):
+                file_chunks.append(chunk)
+
+        try:
+            playback_task = asyncio.create_task(_playback())
+            await asyncio.wait_for(playback_started.wait(), timeout=1.0)
+            file_task = asyncio.create_task(_file())
+            await asyncio.sleep(0)
+            file_cancelled.set()
+            assert await client.cancel(owner="file:job-2") is False
+            await asyncio.wait_for(playback_task, timeout=1.0)
+            await asyncio.wait_for(file_task, timeout=1.0)
+            assert file_chunks == []
+
+            reusable = [
+                chunk
+                async for chunk in client.generate(
+                    SpeechRequest("Следующая реплика."),
+                    owner="playback",
+                )
+            ]
+            assert len(reusable) == 5
+        finally:
+            await client.close()
+
+    asyncio.run(_run())
+
+
 def test_late_cancel_does_not_poison_next_persistent_request():
     async def _run() -> None:
         client = NeuralWorkerClient(

@@ -56,6 +56,27 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.voxcpm2.optimize)
         self.assertTrue(config.voxcpm2.load_denoiser)
 
+    def test_file_render_config_is_merged_and_normalized(self):
+        config = SpeakerConfig().merge_dict(
+            {
+                "file_render": {
+                    "enabled": "false",
+                    "output_dir": " custom/tts ",
+                    "max_text_chars": 0,
+                    "max_pending_jobs": 999,
+                    "max_completed_jobs": 0,
+                    "segment_chars": 5,
+                }
+            }
+        )
+
+        self.assertFalse(config.file_render.enabled)
+        self.assertEqual(config.file_render.output_dir, "custom/tts")
+        self.assertEqual(config.file_render.max_text_chars, 1)
+        self.assertEqual(config.file_render.max_pending_jobs, 128)
+        self.assertEqual(config.file_render.max_completed_jobs, 1)
+        self.assertEqual(config.file_render.segment_chars, 40)
+
     def test_rejects_unknown_tts_backend(self):
         with self.assertRaises(ValueError):
             SpeakerConfig().merge_dict({"tts": {"backend": "unknown"}})

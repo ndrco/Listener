@@ -54,7 +54,7 @@ class NeuralSpeechEngine:
         cancel_requested = asyncio.Event()
         self._active_cancel = cancel_requested
         try:
-            async for chunk in self.client.generate(speech_request):
+            async for chunk in self.client.generate(speech_request, owner="playback"):
                 if cancel_requested.is_set():
                     # Keep consuming until the worker's terminal cancellation
                     # frame so its persistent stdout remains aligned.
@@ -129,7 +129,7 @@ class NeuralSpeechEngine:
         cancel_requested = self._active_cancel
         if cancel_requested is not None:
             cancel_requested.set()
-        await asyncio.gather(self.player.abort(), self.client.cancel())
+        await asyncio.gather(self.player.abort(), self.client.cancel(owner="playback"))
 
     async def close(self) -> None:
         await self.player.abort()
