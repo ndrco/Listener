@@ -7,10 +7,11 @@ import logging
 import time
 from typing import Any
 
+from audio.ducking import PulseAudioDucker
 from core import perf
 
 from .neural_worker_client import NeuralWorkerClient
-from .streaming_playback import PCMStreamPlayer
+from .streaming_playback import PCMStreamPlayer, StreamingPlaybackInterrupted
 from .tts import SpeechEngine, SpeechRequest
 
 
@@ -24,6 +25,7 @@ class NeuralSpeechEngine:
         backend: str,
         client: NeuralWorkerClient,
         player: PCMStreamPlayer | None = None,
+        ducking_config: object | None = None,
     ) -> None:
         self.backend = str(backend)
         self.client = client
@@ -35,6 +37,14 @@ class NeuralSpeechEngine:
         self._last_generation_ms: float | None = None
         self._last_audio_ms: float | None = None
         self._active_cancel: asyncio.Event | None = None
+        self._ducking_config = ducking_config
+        self._ducker: PulseAudioDucker | None = None
+        set_callbacks = getattr(self.player, "set_lifecycle_callbacks", None)
+        if callable(set_callbacks):
+            set_callbacks(
+                on_start=self._on_playback_start,
+                on_stop=self._on_playback_stop,
+            )
 
     async def start(self) -> None:
         await self.client.start()
@@ -51,6 +61,7 @@ class NeuralSpeechEngine:
         started = time.perf_counter()
         audio_seconds = 0.0
         completed = False
+        playback_failed = False
         cancel_requested = asyncio.Event()
         self._active_cancel = cancel_requested
         try:
@@ -74,11 +85,32 @@ class NeuralSpeechEngine:
                         sample_rate=chunk.sample_rate,
                         channels=chunk.channels,
                         sample_width=chunk.sample_width,
+                        run_id=speech_request.run_id,
                     )
                 if cancel_requested.is_set():
                     continue
+                if playback_failed:
+                    continue
                 try:
                     await self.player.write(chunk.pcm)
+                except StreamingPlaybackInterrupted as exc:
+                    # Do not replay the whole segment through Piper: part of it
+                    # may already have been audible. Drain the neural worker so
+                    # its protocol stays aligned, then resume on the next
+                    # segment with a fresh playback process.
+                    playback_failed = True
+                    self._last_error = str(exc)
+                    log.error("Neural PCM playback interrupted: %s", exc)
+                    perf.emit(
+                        "speaker",
+                        "neural_playback_interrupted",
+                        backend=self.backend,
+                        run_id=speech_request.run_id,
+                        segment_id=speech_request.segment_id,
+                        error=exc,
+                    )
+                    await self.player.abort()
+                    continue
                 except Exception:
                     # abort() can close the stream after the check above but
                     # before write() acquires the player lock.  That is an
@@ -90,7 +122,22 @@ class NeuralSpeechEngine:
                 audio_seconds += len(chunk.pcm) / (
                     chunk.sample_rate * chunk.channels * chunk.sample_width
                 )
-            await self.player.finish()
+            if not playback_failed:
+                try:
+                    finish_segment = getattr(self.player, "finish_segment", None)
+                    if callable(finish_segment):
+                        await finish_segment()
+                    else:
+                        await self.player.finish()
+                except StreamingPlaybackInterrupted as exc:
+                    playback_failed = True
+                    self._last_error = str(exc)
+                    log.error("Neural PCM playback interrupted at segment end: %s", exc)
+                    await self.player.abort()
+            if not speech_request.run_id and not playback_failed:
+                finish_run = getattr(self.player, "finish_run", None)
+                if callable(finish_run):
+                    await finish_run()
             completed = True
             self._last_generation_ms = (time.perf_counter() - started) * 1000.0
             self._last_audio_ms = audio_seconds * 1000.0
@@ -107,7 +154,8 @@ class NeuralSpeechEngine:
                 if self._last_audio_ms
                 else None,
             )
-            self._last_error = ""
+            if not playback_failed:
+                self._last_error = ""
         except asyncio.CancelledError:
             await self.player.abort()
             raise
@@ -134,6 +182,27 @@ class NeuralSpeechEngine:
     async def close(self) -> None:
         await self.player.abort()
         await self.client.close()
+
+    async def finish_run(self, run_id: str) -> None:
+        try:
+            await self.player.finish_run(run_id)
+        except StreamingPlaybackInterrupted as exc:
+            self._last_error = str(exc)
+            log.error("Neural PCM playback failed while draining run %s: %s", run_id, exc)
+            await self.player.abort()
+
+    async def _on_playback_start(self) -> None:
+        if self._ducking_config is None or self._ducker is not None:
+            return
+        ducker = PulseAudioDucker(self._ducking_config)
+        await ducker.duck()
+        self._ducker = ducker
+
+    async def _on_playback_stop(self) -> None:
+        ducker = self._ducker
+        self._ducker = None
+        if ducker is not None:
+            await ducker.restore()
 
     def get_status(self) -> dict[str, Any]:
         return {
@@ -218,6 +287,13 @@ class FallbackSpeechEngine:
             return_exceptions=True,
         )
 
+    async def finish_run(self, run_id: str) -> None:
+        await asyncio.gather(
+            _maybe_finish_run(self.primary, run_id=run_id),
+            _maybe_finish_run(self.fallback, run_id=run_id),
+            return_exceptions=True,
+        )
+
     def get_status(self) -> dict[str, Any]:
         primary = _maybe_status(self.primary)
         fallback = _maybe_status(self.fallback)
@@ -248,6 +324,12 @@ async def _maybe_close(engine: SpeechEngine) -> None:
     method = getattr(engine, "close", None)
     if callable(method):
         await method()
+
+
+async def _maybe_finish_run(engine: SpeechEngine, *, run_id: str) -> None:
+    method = getattr(engine, "finish_run", None)
+    if callable(method):
+        await method(run_id)
 
 
 def _maybe_status(engine: SpeechEngine) -> dict | None:

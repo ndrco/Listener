@@ -257,7 +257,10 @@ Listener умеет проигрывать короткие уведомител
 | Ключ | Значение | По умолчанию |
 |------|----------|--------------|
 | `enabled` | Включает/выключает звуковые индикаторы. | `true` |
-| `backend` | `auto`, `sounddevice`, `winsound` или `none`. На Linux обычно используется `sounddevice`, на Windows возможен fallback в `winsound`. | `"auto"` |
+| `backend` | `auto`, `pacat`, `pwcat`, `sounddevice`, `winsound` или `none`. В Linux `auto` предпочитает изолированный `pacat`, в Windows — `winsound`. | `"auto"` |
+| `command` | Необязательный явный путь к `pacat`/`pw-cat`. | `""` |
+| `latency_ms` | Запрашиваемая задержка subprocess-проигрывателя. | `50` |
+| `timeout_s` | Максимальное время работы одного процесса индикатора. | `5.0` |
 | `output_device_index` | Индекс выходного audio-device для сигналов. `null` использует системное устройство по умолчанию. | `null` |
 | `sample_rate` | Частота дискретизации синтезированных сигналов. | `24000` |
 | `volume` | Громкость сигналов в диапазоне `0.0..1.0`. | `0.18` |
@@ -280,6 +283,8 @@ Listener умеет проигрывать короткие уведомител
 {
   "indicators": {
     "enabled": true,
+    "backend": "auto",
+    "latency_ms": 50,
     "rejected": false,
     "forwarded": true,
     "local_handled": false,

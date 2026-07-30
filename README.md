@@ -323,11 +323,13 @@ allowlist as spoken replies. Install the `listener-tts-file` OpenClaw skill to
 let the model invoke this path. Details and API endpoints are in
 [docs/neural-tts.md](docs/neural-tts.md#render-wav-files-without-another-tts-process).
 
-On Linux the default playback path prefers `paplay` when it is available. That
-keeps the Speaker stream visible to PulseAudio/PipeWire with stable
-`application.id=speaker` metadata, which makes ducking and recovery more
-predictable. `sounddevice` remains available as an explicit backend, and old
-subprocess paths are kept as fallbacks.
+On Linux, Piper WAV playback prefers `paplay`. Persistent neural TTS streams
+PCM through an isolated `pacat` process (or `pw-cat` fallback) instead of
+loading PortAudio inside Listener. One lightweight player is reused for every
+segment of an OpenClaw run; CosyVoice3/VoxCPM2 still use exactly one model
+worker. The default 150 ms prebuffer is applied once per reply and protects
+playback from short generation stalls. `sounddevice` remains an explicit
+legacy streaming backend for platforms that do not provide these commands.
 
 Speaker requires all of the following:
 
@@ -352,6 +354,11 @@ Typical config shape:
     "playback": {
       "backend": "auto",
       "command": "/usr/bin/paplay",
+      "streaming_backend": "auto",
+      "prebuffer_ms": 150,
+      "latency_ms": 100,
+      "queue_ms": 2000,
+      "restart_attempts": 1,
       "ducking": {
         "enabled": true
       }
@@ -361,10 +368,11 @@ Typical config shape:
 ```
 
 When OpenClaw streams a long response, Listener queues sentence-sized segments.
-With `speaker.tts_mode="persistent"` the Piper worker stays warm and the next
-segment can be synthesized while the current one is still playing. Ducking is
-applied once for the active OpenClaw run and restored after the last queued
-segment, instead of fading out between sentences.
+With `speaker.tts_mode="persistent"` the selected worker stays warm. Neural
+playback starts ducking only after its prebuffer is ready, keeps the isolated
+player open between segments, and restores volume after that process has
+drained the final PCM. A player crash can cut the current segment, but it
+cannot terminate Listener or reload the TTS model.
 
 Emoji are handled before text reaches Piper. Listener strips emoji from the
 spoken text, optionally sends the extracted symbols to a separate HTTP

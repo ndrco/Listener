@@ -15,14 +15,16 @@
 - `pactl` для диагностики устройства/источника
 - Дополнительно: драйвер NVIDIA и совместимая с CUDA 12.8 сборка PyTorch для STT на GPU.
 - Дополнительно: CLI OpenClaw в `PATH`.
-- Дополнительно: команда воспроизведения `paplay` для встроенного Speaker.
+- `pacat` (пакет `pulseaudio-utils`) или `pw-cat` (пакет `pipewire-bin`) для
+  изолированного воспроизведения нейронного TTS.
+- Дополнительно: команда `paplay` для воспроизведения WAV от Piper.
 
 Пакеты Ubuntu/Debian:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3.12-venv python3-pip \
-  libportaudio2 portaudio19-dev pulseaudio-utils jq
+  libportaudio2 portaudio19-dev pulseaudio-utils pipewire-bin jq
 ```
 
 ## 2. Клонирование и создание `.venv`
@@ -241,6 +243,49 @@ journalctl --user -u listener.service -f
 Изменения режима выполнения сохраняются в `state/runtime_state.json` на установленном
 компьютере. Свежие выпуски не включают этот файл, поэтому новая установка начинается с
 `config/config.json`.
+
+### Необязательное обновление PipeWire в Ubuntu 24.04
+
+Ubuntu 24.04 (Noble) пока оставляет PipeWire `1.0.5` в поддерживаемых apt-репозиториях.
+Listener не требует обновления дистрибутива для локализации сбоя аудиодрайвера:
+воспроизведение neural PCM и индикаторов уже вынесено в дочерние процессы
+`pacat`/`pw-cat`. Тем не менее на боевой машине запущен официальный upstream-тег
+PipeWire `1.6.8` (`b741e0c74f5436f0c925f7741140db0efd32cf4e`) как версионированный
+пользовательский runtime:
+
+```text
+~/.local/opt/pipewire-1.6.8
+~/.config/systemd/user/pipewire.service.d/10-local-1.6.8.conf
+~/.config/systemd/user/pipewire-pulse.service.d/10-local-1.6.8.conf
+```
+
+Сборка содержит daemon, Pulse-протокол, ALSA/udev SPA-модули, поддержку D-Bus и
+RTKit. Системный `wireplumber` остаётся менеджером сессии. Ubuntu-пакеты `1.0.5`
+под `/usr` намеренно сохранены для отката; достоверна версия работающего сервера,
+а не вывод `/usr/bin/pipewire --version`:
+
+```bash
+pw-cli info 0 | grep 'version:'
+pactl info | grep 'Server Name'
+systemctl --user show pipewire.service pipewire-pulse.service wireplumber.service \
+  -p Id -p MainPID -p ActiveState -p NRestarts
+```
+
+Для отката без удаления любой из установок:
+
+```bash
+systemctl --user stop listener.service
+mv ~/.config/systemd/user/pipewire.service.d/10-local-1.6.8.conf \
+  ~/.config/systemd/user/pipewire.service.d/10-local-1.6.8.conf.disabled
+mv ~/.config/systemd/user/pipewire-pulse.service.d/10-local-1.6.8.conf \
+  ~/.config/systemd/user/pipewire-pulse.service.d/10-local-1.6.8.conf.disabled
+systemctl --user daemon-reload
+systemctl --user restart pipewire.service wireplumber.service pipewire-pulse.service
+systemctl --user start listener.service
+```
+
+После любого перезапуска daemon PipeWire долгоживущим настольным клиентам вроде
+EasyEffects может потребоваться перезапуск, чтобы вновь создать виртуальные sink/source.
 
 ## 7. Интеграция OpenClaw
 

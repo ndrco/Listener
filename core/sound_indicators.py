@@ -9,12 +9,12 @@ import math
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
 from audio.ducking import PulseAudioDucker
 from core.config import cfg
+from speaker.streaming_playback import play_pcm_once
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +68,6 @@ class SoundIndicatorPlayer:
         self._task: asyncio.Task[None] | None = None
         self._running = False
         self._backend_name: str | None = None
-        self._backend_module: Any | None = None
         self._backend_warning_logged = False
         self._queue_warning_logged = False
         self._wave_cache: dict[tuple[str, int, float], np.ndarray] = {}
@@ -141,7 +140,7 @@ class SoundIndicatorPlayer:
             ducker = PulseAudioDucker(cfg.indicators.ducking, exclude_speaker=False)
             try:
                 await ducker.duck()
-                await asyncio.to_thread(self._play_sync, kind)
+                await self._play(kind)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -149,57 +148,37 @@ class SoundIndicatorPlayer:
             finally:
                 await ducker.restore()
 
-    def _play_sync(self, kind: str) -> None:
-        backend_name, backend_module = self._get_backend()
-        if backend_name == "sounddevice" and backend_module is not None:
-            self._play_with_sounddevice(backend_module, kind)
-            return
-        if backend_name == "winsound" and backend_module is not None:
-            self._play_with_winsound(backend_module, kind)
-            return
-
-    def _get_backend(self) -> tuple[str | None, Any | None]:
-        if self._backend_name == "disabled":
-            return None, None
-        if self._backend_name is not None:
-            return self._backend_name, self._backend_module
-
+    async def _play(self, kind: str) -> None:
         requested = str(getattr(cfg.indicators, "backend", "auto") or "auto").strip().lower()
         if requested == "none":
             self._backend_name = "disabled"
-            return None, None
-
-        if requested in {"auto", "sounddevice"}:
-            try:
-                import sounddevice as sounddevice_backend  # type: ignore
-            except Exception as exc:
-                if requested == "sounddevice":
-                    self._warn_backend_unavailable(
-                        f"sounddevice backend unavailable for indicators: {exc}"
-                    )
-                else:
-                    self._warn_backend_unavailable(
-                        f"sounddevice backend unavailable for indicators, trying fallback: {exc}"
-                    )
-            else:
-                self._backend_name = "sounddevice"
-                self._backend_module = sounddevice_backend
-                return self._backend_name, self._backend_module
-
-        if requested in {"auto", "winsound"} and sys.platform.startswith("win"):
+            return
+        if requested == "winsound" or (requested == "auto" and sys.platform.startswith("win")):
             try:
                 import winsound  # type: ignore
             except Exception as exc:
-                self._warn_backend_unavailable(
-                    f"winsound backend unavailable for indicators: {exc}"
-                )
+                self._warn_backend_unavailable(f"winsound backend unavailable: {exc}")
             else:
                 self._backend_name = "winsound"
-                self._backend_module = winsound
-                return self._backend_name, self._backend_module
+                await asyncio.to_thread(self._play_with_winsound, winsound, kind)
+                return
 
-        self._backend_name = "disabled"
-        return None, None
+        sample_rate = int(getattr(cfg.indicators, "sample_rate", 24000) or 24000)
+        volume = float(getattr(cfg.indicators, "volume", 0.18) or 0.18)
+        wave = self._get_wave(kind, sample_rate, volume)
+        pcm = (np.clip(wave, -1.0, 1.0) * 32767.0).astype("<i2", copy=False).tobytes()
+        self._backend_name = await play_pcm_once(
+            pcm,
+            sample_rate=sample_rate,
+            channels=1,
+            backend=requested,
+            command=str(getattr(cfg.indicators, "command", "") or ""),
+            latency_ms=int(getattr(cfg.indicators, "latency_ms", 50) or 50),
+            timeout_s=float(getattr(cfg.indicators, "timeout_s", 5.0) or 5.0),
+            client_name="Listener",
+            stream_name=f"Listener {kind} indicator",
+            device=getattr(cfg.indicators, "output_device_index", None),
+        )
 
     def _warn_backend_unavailable(self, message: str) -> None:
         if self._backend_warning_logged:
@@ -207,33 +186,23 @@ class SoundIndicatorPlayer:
         self._backend_warning_logged = True
         log.warning("sound_indicators: %s", message)
 
-    def _play_with_sounddevice(self, backend: Any, kind: str) -> None:
-        sample_rate = int(getattr(cfg.indicators, "sample_rate", 24000) or 24000)
-        volume = float(getattr(cfg.indicators, "volume", 0.18) or 0.18)
+    def _get_wave(self, kind: str, sample_rate: int, volume: float) -> np.ndarray:
         cache_key = (kind, sample_rate, round(volume, 4))
         wave = self._wave_cache.get(cache_key)
         if wave is None:
             wave = self._build_wave(kind, sample_rate, volume)
             self._wave_cache[cache_key] = wave
-        device_index = getattr(cfg.indicators, "output_device_index", None)
-        try:
-            backend.play(wave, samplerate=sample_rate, device=device_index, blocking=True)
-            backend.stop()
-        except Exception as exc:
-            self._warn_backend_unavailable(f"sounddevice playback failed for indicators: {exc}")
-            if sys.platform.startswith("win"):
-                self._backend_name = None
-                self._backend_module = None
-                backend_name, backend_module = self._get_backend()
-                if backend_name == "winsound" and backend_module is not None:
-                    self._play_with_winsound(backend_module, kind)
+        return wave
 
-    def _play_with_winsound(self, backend: Any, kind: str) -> None:
+    def _play_with_winsound(self, backend: object, kind: str) -> None:
         pattern = _PATTERNS.get(kind)
         if pattern is None:
             return
         for index, step in enumerate(pattern.steps):
-            backend.Beep(max(37, int(round(step.frequency_hz))), max(20, int(step.duration_ms)))
+            backend.Beep(  # type: ignore[attr-defined]
+                max(37, int(round(step.frequency_hz))),
+                max(20, int(step.duration_ms)),
+            )
             if index + 1 < len(pattern.steps) and pattern.gap_ms > 0:
                 time.sleep(pattern.gap_ms / 1000.0)
 

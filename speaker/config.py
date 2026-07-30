@@ -142,6 +142,13 @@ class PlaybackConfig:
     client_name: str = "Speaker"
     stream_name: str = "Speaker TTS"
     timeout_s: float = 120.0
+    streaming_backend: str = "auto"
+    streaming_command: str = ""
+    prebuffer_ms: int = 150
+    latency_ms: int = 100
+    queue_ms: int = 2000
+    restart_attempts: int = 1
+    write_timeout_s: float = 5.0
     ducking: DuckingConfig = field(default_factory=DuckingConfig)
 
 
@@ -323,6 +330,16 @@ class SpeakerConfig:
             playback = replace(playback, command=player)
         if backend := os.getenv("SPEAKER_PLAYBACK_BACKEND"):
             playback = replace(playback, backend=backend)
+        if streaming_backend := os.getenv("SPEAKER_STREAMING_PLAYBACK_BACKEND"):
+            playback = replace(playback, streaming_backend=streaming_backend)
+        if streaming_command := os.getenv("SPEAKER_STREAMING_PLAYBACK_COMMAND"):
+            playback = replace(playback, streaming_command=streaming_command)
+        if prebuffer_ms := os.getenv("SPEAKER_STREAMING_PREBUFFER_MS"):
+            playback = replace(playback, prebuffer_ms=int(prebuffer_ms))
+        if latency_ms := os.getenv("SPEAKER_STREAMING_LATENCY_MS"):
+            playback = replace(playback, latency_ms=int(latency_ms))
+        if queue_ms := os.getenv("SPEAKER_STREAMING_QUEUE_MS"):
+            playback = replace(playback, queue_ms=int(queue_ms))
         if fade_in_ms := os.getenv("SPEAKER_DUCKING_FADE_IN_MS") or os.getenv("SPEAKER_FADE_IN_MS"):
             playback = replace(
                 playback,
@@ -615,10 +632,31 @@ def _normalize_playback_config(config: PlaybackConfig) -> PlaybackConfig:
     backend = str(getattr(config, "backend", "auto") or "auto").strip().casefold()
     if backend not in {"auto", "sounddevice", "paplay", "subprocess"}:
         raise ValueError("speaker.playback.backend must be one of: auto, sounddevice, paplay, subprocess")
+    streaming_backend = str(
+        getattr(config, "streaming_backend", "auto") or "auto"
+    ).strip().casefold()
+    if streaming_backend not in {"auto", "pacat", "pwcat", "sounddevice"}:
+        raise ValueError(
+            "speaker.playback.streaming_backend must be one of: "
+            "auto, pacat, pwcat, sounddevice"
+        )
+    prebuffer_ms = max(0, int(getattr(config, "prebuffer_ms", 150)))
+    latency_ms = max(10, int(getattr(config, "latency_ms", 100)))
+    queue_ms = max(
+        prebuffer_ms + 20,
+        int(getattr(config, "queue_ms", 2000)),
+    )
     return replace(
         config,
         backend=backend,
         timeout_s=max(1.0, float(config.timeout_s)),
+        streaming_backend=streaming_backend,
+        streaming_command=str(getattr(config, "streaming_command", "") or "").strip(),
+        prebuffer_ms=prebuffer_ms,
+        latency_ms=latency_ms,
+        queue_ms=queue_ms,
+        restart_attempts=max(0, int(getattr(config, "restart_attempts", 1))),
+        write_timeout_s=max(0.1, float(getattr(config, "write_timeout_s", 5.0))),
         ducking=replace(
             config.ducking,
             enabled=bool(config.ducking.enabled),

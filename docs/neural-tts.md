@@ -333,6 +333,49 @@ service, use:
 journalctl --user -u listener.service -f
 ```
 
+## Crash-isolated streaming playback
+
+Neural workers produce mono PCM16 chunks. On Linux, Listener sends those chunks
+to a lightweight `pacat` subprocess by default and falls back to `pw-cat` when
+needed. PortAudio therefore does not run inside the Listener process for normal
+neural playback. Killing or crashing the audio child cannot terminate Listener
+or the persistent model worker.
+
+The player is scoped to an OpenClaw `run_id`, not an individual sentence. It
+collects the initial prebuffer once, remains open between queued segments, and
+drains only after Speaker processes the run-finished marker. Ducking begins
+immediately before the child starts and is restored after its stdin and server
+buffers have drained. File rendering bypasses playback and is unaffected.
+
+```json
+{
+  "speaker": {
+    "playback": {
+      "streaming_backend": "auto",
+      "streaming_command": "",
+      "prebuffer_ms": 150,
+      "latency_ms": 100,
+      "queue_ms": 2000,
+      "restart_attempts": 1,
+      "write_timeout_s": 5
+    }
+  }
+}
+```
+
+`auto` prefers `pacat`, then `pw-cat`; on non-Linux systems it may use
+`sounddevice`. Explicit values are `pacat`, `pwcat`, and `sounddevice`.
+`streaming_command` can override the executable path. `prebuffer_ms` is the
+one-time start cushion, `latency_ms` requests the audio-server buffer,
+`queue_ms` bounds PCM waiting in Listener, and `restart_attempts` limits new
+player processes after a mid-run failure.
+
+Speaker status reports the resolved backend, child PID, queue/prebuffer state,
+bytes written, restart count, last exit code, and captured stderr tail. Listener
+does not automatically replay a segment after a mid-playback crash because its
+beginning may already have been audible; it starts a fresh player for the next
+segment instead.
+
 ## Render WAV files without another TTS process
 
 When Listener is already running with `tts_mode="persistent"` and the selected

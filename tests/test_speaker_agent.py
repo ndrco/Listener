@@ -286,12 +286,48 @@ def test_speech_playback_controller_resolves_style_before_queueing():
 
     first = controller._queue.get_nowait()
     second = controller._queue.get_nowait()
+    finish_marker = controller._queue.get_nowait()
     third = controller._queue.get_nowait()
     assert first.request.text == "Спокойно."
     assert first.request.style_id == "calm"
     assert first.request.emoji == "😌"
     assert second.request.style_id == "calm"
+    assert finish_marker.run_id == "run-1"
     assert third.request.style_id == "neutral"
+
+
+def test_speech_playback_controller_drains_neural_run_after_last_segment():
+    class RecordingSpeech:
+        def __init__(self):
+            self.calls = []
+
+        async def speak(self, request) -> None:
+            self.calls.append(("speak", request.segment_id))
+
+        async def finish_run(self, run_id) -> None:
+            self.calls.append(("finish", run_id))
+
+    async def _run() -> None:
+        speech = RecordingSpeech()
+        controller = SpeechPlaybackController(
+            speech=speech,
+            queue_size=4,
+            enabled=True,
+        )
+        await controller.start()
+        assert controller.enqueue(SpeechSegment("seg-1", "Первая.", "run-1"))
+        assert controller.enqueue(SpeechSegment("seg-2", "Вторая.", "run-1"))
+        controller.finish_run("run-1")
+        await asyncio.wait_for(controller._queue.join(), timeout=1.0)
+        await controller.close()
+
+        assert speech.calls == [
+            ("speak", "seg-1"),
+            ("speak", "seg-2"),
+            ("finish", "run-1"),
+        ]
+
+    asyncio.run(_run())
 
 
 def test_speech_playback_controller_skips_emoji_only_segment():
@@ -437,7 +473,8 @@ def test_speaker_agent_streaming_stale_final_history_queues_missing_tail():
         queued = []
         while not agent._playback._queue.empty():
             item = agent._playback._queue.get_nowait()
-            queued.append(item.request.text)
+            if hasattr(item, "request"):
+                queued.append(item.request.text)
             agent._playback._queue.task_done()
 
         assert gateway.history_calls == 1

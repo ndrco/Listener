@@ -137,6 +137,9 @@ class SoundIndicatorsCfg:
 
     enabled: bool = True
     backend: str = "auto"
+    command: str = ""
+    latency_ms: int = 50
+    timeout_s: float = 5.0
     output_device_index: int | None = None
     sample_rate: int = 24000
     volume: float = 0.18
@@ -537,6 +540,26 @@ def load(path: str | None = None) -> None:
             backend_value = indicators_section.get("backend", indicators_cfg.backend)
             if isinstance(backend_value, str) and backend_value.strip():
                 indicators_cfg.backend = backend_value.strip().lower()
+
+            command_value = indicators_section.get("command", indicators_cfg.command)
+            if isinstance(command_value, str):
+                indicators_cfg.command = command_value.strip()
+
+            try:
+                indicators_cfg.latency_ms = max(
+                    10,
+                    int(indicators_section.get("latency_ms", indicators_cfg.latency_ms)),
+                )
+            except (TypeError, ValueError):
+                pass
+
+            try:
+                indicators_cfg.timeout_s = max(
+                    0.1,
+                    float(indicators_section.get("timeout_s", indicators_cfg.timeout_s)),
+                )
+            except (TypeError, ValueError):
+                pass
 
             device_value = indicators_section.get(
                 "output_device_index", indicators_cfg.output_device_index

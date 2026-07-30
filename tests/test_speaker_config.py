@@ -221,6 +221,26 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.playback.ducking.enabled)
         self.assertEqual(config.playback.ducking.volume_scale, 1.0)
 
+    def test_streaming_playback_values_are_normalized(self):
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                '{"playback": {"streaming_backend": "PACAT", "prebuffer_ms": -1, '
+                '"latency_ms": 2, "queue_ms": 1, "restart_attempts": -2, '
+                '"write_timeout_s": 0}}',
+                encoding="utf-8",
+            )
+
+            with patch("speaker.config.DEFAULT_CONFIG_PATH", config_path):
+                config = SpeakerConfig.load()
+
+        self.assertEqual(config.playback.streaming_backend, "pacat")
+        self.assertEqual(config.playback.prebuffer_ms, 0)
+        self.assertEqual(config.playback.latency_ms, 10)
+        self.assertEqual(config.playback.queue_ms, 20)
+        self.assertEqual(config.playback.restart_attempts, 0)
+        self.assertEqual(config.playback.write_timeout_s, 0.1)
+
     def test_legacy_playback_fade_keys_are_mapped_to_ducking(self):
         with TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"

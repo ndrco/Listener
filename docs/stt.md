@@ -250,7 +250,10 @@ configuration is stored in the `indicators` section of `config/config.json`.
 | Key | Purpose | Default |
 |------|----------|--------------|
 | `enabled` | Turns on/off the audible indicators. | `true` |
-| `backend` | `auto`, `sounddevice`, `winsound`, or `none`. On Linux, `sounddevice` is usually used, on Windows, fallback to `winsound` is possible. | `"auto"` |
+| `backend` | `auto`, `pacat`, `pwcat`, `sounddevice`, `winsound`, or `none`. Linux `auto` prefers crash-isolated `pacat`; Windows prefers `winsound`. | `"auto"` |
+| `command` | Optional explicit path to the `pacat`/`pw-cat` executable. | `""` |
+| `latency_ms` | Requested subprocess playback latency. | `50` |
+| `timeout_s` | Maximum time allowed for one indicator process. | `5.0` |
 | `output_device_index` | Output audio-device index for signals. `null` uses the default system device. | `null` |
 | `sample_rate` | Sampling frequency of synthesized signals. | `24000` |
 | `volume` | The signal volume is in the range `0.0..1.0`. | `0.18` |
@@ -273,6 +276,8 @@ You can turn off the signal types individually, for example:
 {
   "indicators": {
     "enabled": true,
+    "backend": "auto",
+    "latency_ms": 50,
     "rejected": false,
     "forwarded": true,
     "local_handled": false,

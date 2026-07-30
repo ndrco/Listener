@@ -32,6 +32,11 @@ class _PlaybackItem:
     emoji_tokens: tuple[EmojiToken, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _FinishRun:
+    run_id: str
+
+
 class SpeechPlaybackController:
     """Serial speech playback queue with interrupt support."""
 
@@ -51,7 +56,7 @@ class SpeechPlaybackController:
         self._style_resolver = style_resolver or EmojiStyleResolver()
         self._run_ducker: PulseAudioDucker | None = None
         self._ducked_run_id: str | None = None
-        self._queue: asyncio.Queue[_PlaybackItem | None] = asyncio.Queue(
+        self._queue: asyncio.Queue[_PlaybackItem | _FinishRun | None] = asyncio.Queue(
             maxsize=max(1, int(queue_size or 1))
         )
         self._enabled = bool(enabled)
@@ -62,6 +67,7 @@ class SpeechPlaybackController:
         self._last_interrupt_reason = ""
         self._interrupt_all_generation = 0
         self._interrupted_run_ids: set[str] = set()
+        self._control_tasks: set[asyncio.Task[None]] = set()
 
     def _emoji_display_enabled(self) -> bool:
         emoji_display = self._emoji_display
@@ -89,6 +95,11 @@ class SpeechPlaybackController:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        for control_task in list(self._control_tasks):
+            control_task.cancel()
+        if self._control_tasks:
+            await asyncio.gather(*self._control_tasks, return_exceptions=True)
+        self._control_tasks.clear()
         await _close_speech_engine(self._speech)
         self._style_resolver.clear()
 
@@ -133,6 +144,16 @@ class SpeechPlaybackController:
     def finish_run(self, run_id: str) -> None:
         """Forget inherited style after all requests for a run have been queued."""
         self._style_resolver.discard(run_id)
+        marker = _FinishRun(str(run_id or ""))
+        try:
+            self._queue.put_nowait(marker)
+        except asyncio.QueueFull:
+            task = asyncio.create_task(
+                self._queue.put(marker),
+                name=f"Speaker.finish_run.{marker.run_id or 'unknown'}",
+            )
+            self._control_tasks.add(task)
+            task.add_done_callback(self._control_tasks.discard)
 
     async def interrupt(self, *, reason: str, run_id: str | None = None) -> int:
         self._last_interrupt_reason = str(reason or "")
@@ -198,13 +219,20 @@ class SpeechPlaybackController:
     def _drain_queue(self, *, run_id: str | None) -> tuple[int, set[str]]:
         dropped = 0
         dropped_run_ids: set[str] = set()
-        kept: list[_PlaybackItem | None] = []
+        kept: list[_PlaybackItem | _FinishRun | None] = []
         while True:
             try:
                 item = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             if item is None:
+                kept.append(item)
+                self._queue.task_done()
+                continue
+            if isinstance(item, _FinishRun):
+                if run_id is None or item.run_id == run_id:
+                    self._queue.task_done()
+                    continue
                 kept.append(item)
                 self._queue.task_done()
                 continue
@@ -226,6 +254,14 @@ class SpeechPlaybackController:
             if item is None:
                 self._queue.task_done()
                 break
+            if isinstance(item, _FinishRun):
+                try:
+                    await _finish_speech_run(self._speech, run_id=item.run_id)
+                finally:
+                    self._queue.task_done()
+                    if self._ducked_run_id == item.run_id:
+                        await self._restore_run_ducking()
+                continue
             segment = item.segment
             request = item.request
             if not self._accepts_segments():
@@ -397,6 +433,10 @@ class SpeakerAgent:
         self._gateway_factory = gateway_factory or (lambda gateway_cfg: GatewayClient(gateway_cfg))
         tts_mode = str(getattr(self._config.speaker, "tts_mode", "persistent") or "persistent")
         persistent_tts = tts_mode == "persistent"
+        neural_tts = str(self._config.tts.backend or "").strip().casefold() in {
+            "voxcpm2",
+            "cosyvoice3",
+        }
         self._speech = speech or create_speech_engine(self._config)
         self._emoji_display = EmojiDisplayClient(self._config.emoji_display)
         self._playback = SpeechPlaybackController(
@@ -404,7 +444,9 @@ class SpeakerAgent:
             queue_size=self._config.speaker.queue_size,
             enabled=bool(self._config.enabled),
             emoji_display=self._emoji_display,
-            ducking_config=self._config.playback.ducking if persistent_tts else None,
+            ducking_config=self._config.playback.ducking
+            if persistent_tts and not neural_tts
+            else None,
             style_resolver=EmojiStyleResolver(self._config.tts.style),
         )
         self._file_renderer = TTSFileRenderer(
@@ -835,6 +877,16 @@ async def _close_speech_engine(speech: SpeechEngine) -> None:
         await close()
     except Exception as exc:  # noqa: BLE001 - shutdown remains best-effort
         log.warning("SpeakerAgent: TTS close failed: %s", exc)
+
+
+async def _finish_speech_run(speech: SpeechEngine, *, run_id: str) -> None:
+    finish_run = getattr(speech, "finish_run", None)
+    if not callable(finish_run):
+        return
+    try:
+        await finish_run(run_id)
+    except Exception as exc:  # noqa: BLE001 - next reply must remain playable
+        log.warning("SpeakerAgent: TTS run drain failed run_id=%s: %s", run_id, exc)
 
 
 def _speech_engine_status(speech: SpeechEngine) -> dict | None:

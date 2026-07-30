@@ -107,6 +107,13 @@
       "backend": "auto",
       "command": "/usr/bin/paplay",
       "timeout_s": 120,
+      "streaming_backend": "auto",
+      "streaming_command": "",
+      "prebuffer_ms": 150,
+      "latency_ms": 100,
+      "queue_ms": 2000,
+      "restart_attempts": 1,
+      "write_timeout_s": 5,
       "ducking": {
         "enabled": true,
         "volume_scale": 0.5,
@@ -138,6 +145,9 @@
   "indicators": {
     "enabled": true,
     "backend": "auto",
+    "command": "",
+    "latency_ms": 50,
+    "timeout_s": 5,
     "output_device_index": null,
     "sample_rate": 24000,
     "volume": 0.5,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from speaker.neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
+from speaker.streaming_playback import StreamingPlaybackInterrupted
 from speaker.neural_worker_client import AudioChunk
 from speaker.tts import SpeechRequest
 
@@ -34,6 +35,7 @@ class FakePlayer:
         self.started = []
         self.writes = []
         self.finished = False
+        self.run_finished = False
         self.aborted = False
 
     async def start(self, **audio_format):
@@ -44,6 +46,12 @@ class FakePlayer:
 
     async def finish(self):
         self.finished = True
+
+    async def finish_segment(self):
+        self.finished = True
+
+    async def finish_run(self, _run_id=None):
+        self.run_finished = True
 
     async def abort(self):
         self.aborted = True
@@ -62,9 +70,17 @@ def test_neural_engine_plays_worker_chunks_directly():
         await engine.speak(request)
 
         assert client.requests == [request]
-        assert player.started == [{"sample_rate": 48000, "channels": 1, "sample_width": 2}]
+        assert player.started == [
+            {
+                "sample_rate": 48000,
+                "channels": 1,
+                "sample_width": 2,
+                "run_id": "",
+            }
+        ]
         assert player.writes == [b"\x00\x00", b"\x01\x00"]
         assert player.finished is True
+        assert player.run_finished is True
         assert engine.get_status()["chunks_played"] == 2
 
     asyncio.run(_run())
@@ -174,5 +190,33 @@ def test_fallback_opens_circuit_after_consecutive_errors():
         assert status["active_backend"] == "fallback"
         assert status["using_fallback"] is True
         assert status["circuit_open"] is True
+
+    asyncio.run(_run())
+
+
+def test_playback_crash_does_not_replay_partially_audible_segment_with_fallback():
+    class CrashingPlayer(FakePlayer):
+        async def write(self, pcm):
+            raise StreamingPlaybackInterrupted("player exited")
+
+    class RecordingFallback:
+        def __init__(self):
+            self.requests = []
+
+        async def speak(self, request):
+            self.requests.append(request)
+
+    async def _run() -> None:
+        client = FakeClient()
+        player = CrashingPlayer()
+        primary = NeuralSpeechEngine(backend="fake", client=client, player=player)
+        fallback = RecordingFallback()
+        engine = FallbackSpeechEngine(primary, fallback)
+
+        await engine.speak(SpeechRequest("Не повторять.", run_id="run-1"))
+
+        assert fallback.requests == []
+        assert primary.get_status()["last_error"] == "player exited"
+        assert player.aborted is True
 
     asyncio.run(_run())

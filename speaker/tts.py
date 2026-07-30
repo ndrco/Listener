@@ -349,7 +349,10 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
         config.piper,
         config.playback,
         prefetch=persistent,
-        manage_ducking=not persistent,
+        # Persistent Piper is ducked by SpeechPlaybackController. Neural
+        # playback owns ducking itself so it can wait for the prebuffer; its
+        # Piper fallback therefore has to manage ducking independently.
+        manage_ducking=not persistent or backend != "piper",
     )
     if backend == "piper":
         return fallback
@@ -362,6 +365,7 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
     if backend == "voxcpm2":
         from .neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
         from .neural_worker_client import NeuralWorkerClient
+        from .streaming_playback import PCMStreamPlayer
 
         worker_path = Path(__file__).with_name("workers") / "voxcpm2_worker.py"
         vox = config.voxcpm2
@@ -393,7 +397,23 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
             generation_timeout_s=config.tts.generation_timeout_s,
             cancel_timeout_s=config.tts.cancel_timeout_s,
         )
-        primary = NeuralSpeechEngine(backend="voxcpm2", client=client)
+        primary = NeuralSpeechEngine(
+            backend="voxcpm2",
+            client=client,
+            player=PCMStreamPlayer(
+                backend=config.playback.streaming_backend,
+                command=config.playback.streaming_command,
+                prebuffer_ms=config.playback.prebuffer_ms,
+                latency_ms=config.playback.latency_ms,
+                queue_ms=config.playback.queue_ms,
+                restart_attempts=config.playback.restart_attempts,
+                write_timeout_s=config.playback.write_timeout_s,
+                timeout_s=config.playback.timeout_s,
+                client_name=config.playback.client_name,
+                stream_name=config.playback.stream_name,
+            ),
+            ducking_config=config.playback.ducking,
+        )
         return FallbackSpeechEngine(
             primary,
             fallback,
@@ -402,6 +422,7 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
     if backend == "cosyvoice3":
         from .neural_tts import FallbackSpeechEngine, NeuralSpeechEngine
         from .neural_worker_client import NeuralWorkerClient
+        from .streaming_playback import PCMStreamPlayer
 
         worker_path = Path(__file__).with_name("workers") / "cosyvoice3_worker.py"
         cosy = config.cosyvoice3
@@ -434,7 +455,23 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
             generation_timeout_s=config.tts.generation_timeout_s,
             cancel_timeout_s=config.tts.cancel_timeout_s,
         )
-        primary = NeuralSpeechEngine(backend="cosyvoice3", client=client)
+        primary = NeuralSpeechEngine(
+            backend="cosyvoice3",
+            client=client,
+            player=PCMStreamPlayer(
+                backend=config.playback.streaming_backend,
+                command=config.playback.streaming_command,
+                prebuffer_ms=config.playback.prebuffer_ms,
+                latency_ms=config.playback.latency_ms,
+                queue_ms=config.playback.queue_ms,
+                restart_attempts=config.playback.restart_attempts,
+                write_timeout_s=config.playback.write_timeout_s,
+                timeout_s=config.playback.timeout_s,
+                client_name=config.playback.client_name,
+                stream_name=config.playback.stream_name,
+            ),
+            ducking_config=config.playback.ducking,
+        )
         return FallbackSpeechEngine(
             primary,
             fallback,

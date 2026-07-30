@@ -15,14 +15,16 @@ primary tested path.
 - `pactl` for device/source diagnostics
 - Optional: NVIDIA driver with CUDA 12.8-compatible PyTorch for GPU STT
 - Optional: OpenClaw CLI in `PATH`
-- Optional: `paplay` playback command for integrated Speaker
+- `pacat` (from `pulseaudio-utils`) or `pw-cat` (from `pipewire-bin`) for
+  crash-isolated neural TTS playback
+- Optional: `paplay` playback command for Piper WAV playback
 
 Ubuntu/Debian packages:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3.12-venv python3-pip \
-  libportaudio2 portaudio19-dev pulseaudio-utils jq
+  libportaudio2 portaudio19-dev pulseaudio-utils pipewire-bin jq
 ```
 
 ## 2. Clone and Create `.venv`
@@ -239,6 +241,50 @@ custom checkout paths, and strict startup mode, see
 Runtime mode changes are saved in `state/runtime_state.json` on the installed
 machine. Fresh releases do not include this file, so a new installation starts
 from `config/config.json`.
+
+### Optional PipeWire runtime upgrade on Ubuntu 24.04
+
+Ubuntu 24.04 (Noble) currently keeps PipeWire `1.0.5` in its supported apt
+repositories. Listener does not require a distribution upgrade to contain an
+audio-driver crash: neural PCM and indicator playback are already isolated in
+`pacat`/`pw-cat` child processes. The production host nevertheless runs the
+official upstream PipeWire `1.6.8` tag (`b741e0c74f5436f0c925f7741140db0efd32cf4e`)
+as a versioned, user-local runtime:
+
+```text
+~/.local/opt/pipewire-1.6.8
+~/.config/systemd/user/pipewire.service.d/10-local-1.6.8.conf
+~/.config/systemd/user/pipewire-pulse.service.d/10-local-1.6.8.conf
+```
+
+The build contains the daemon, Pulse protocol, ALSA/udev SPA modules, D-Bus and
+RTKit support. The system `wireplumber` remains the session manager. The Ubuntu
+`1.0.5` packages under `/usr` are intentionally retained as a rollback; the
+running server version, rather than `/usr/bin/pipewire --version`, is
+authoritative:
+
+```bash
+pw-cli info 0 | grep 'version:'
+pactl info | grep 'Server Name'
+systemctl --user show pipewire.service pipewire-pulse.service wireplumber.service \
+  -p Id -p MainPID -p ActiveState -p NRestarts
+```
+
+To roll back without removing either installation:
+
+```bash
+systemctl --user stop listener.service
+mv ~/.config/systemd/user/pipewire.service.d/10-local-1.6.8.conf \
+  ~/.config/systemd/user/pipewire.service.d/10-local-1.6.8.conf.disabled
+mv ~/.config/systemd/user/pipewire-pulse.service.d/10-local-1.6.8.conf \
+  ~/.config/systemd/user/pipewire-pulse.service.d/10-local-1.6.8.conf.disabled
+systemctl --user daemon-reload
+systemctl --user restart pipewire.service wireplumber.service pipewire-pulse.service
+systemctl --user start listener.service
+```
+
+After any PipeWire daemon restart, long-running desktop clients such as
+EasyEffects may need a restart before their virtual sink and source reappear.
 
 ## 7. OpenClaw Integration
 

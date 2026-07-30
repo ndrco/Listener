@@ -64,11 +64,10 @@ def test_sound_indicator_player_ducks_around_playback(monkeypatch):
             cfg.indicators.forwarded = True
             cfg.indicators.ducking.enabled = True
             monkeypatch.setattr("core.sound_indicators.PulseAudioDucker", FakeDucker)
-            monkeypatch.setattr(
-                player,
-                "_play_sync",
-                lambda kind: calls.append(("play", kind)),
-            )
+            async def fake_play(kind):
+                calls.append(("play", kind))
+
+            monkeypatch.setattr(player, "_play", fake_play)
 
             assert await player.emit(INDICATOR_FORWARDED)
             for _ in range(100):
