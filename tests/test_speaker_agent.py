@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 import sys
 
@@ -13,7 +14,7 @@ from core.config import cfg  # noqa: E402
 from core.runtime_state import RuntimeStateStore  # noqa: E402
 from speaker.config import SpeakerConfig  # noqa: E402
 from speaker.events import ChatSpeechRouter, SpeechSegment  # noqa: E402
-from speaker.gateway import GatewayClient  # noqa: E402
+from speaker.gateway import GatewayClient, GatewayError  # noqa: E402
 from speaker.messages import MessageDeduper  # noqa: E402
 
 
@@ -479,6 +480,98 @@ def test_speaker_agent_streaming_stale_final_history_queues_missing_tail():
 
         assert gateway.history_calls == 1
         assert queued == ["Первое предложение.", "Второе предложение."]
+
+    asyncio.run(_runner())
+
+
+def test_speaker_agent_ignores_stale_error_after_confirmed_streaming_final(caplog):
+    async def _runner() -> None:
+        class RecordingSpeech:
+            async def speak(self, text: str) -> None:
+                return None
+
+        config = SpeakerConfig()
+        config.enabled = True
+        config.speaker.mode = "streaming"
+        agent = SpeakerAgent(
+            config=config,
+            speech=RecordingSpeech(),
+            state_store=RuntimeStateStore(None),
+        )
+        gateway = HistoryGateway("Первая фраза. Вторая фраза.")
+        router = ChatSpeechRouter(config.gateway, config.speaker.streaming)
+        deduper = MessageDeduper()
+        interrupts = []
+
+        async def record_interrupt(*, reason="api", run_id=None):
+            interrupts.append((reason, run_id))
+            return 0
+
+        agent.interrupt = record_interrupt  # type: ignore[method-assign]
+
+        delta = chat_event("delta", "Первая фраза.")
+        await agent._handle_event(delta, gateway, deduper, router)
+        final = chat_event("final", "Первая фраза.")
+        await agent._handle_event(final, gateway, deduper, router)
+
+        stale_error = chat_event("error")
+        stale_error["payload"].update(
+            {
+                "seq": 23,
+                "errorMessage": "late tool error",
+                "stopReason": "error",
+            }
+        )
+        with caplog.at_level(logging.WARNING, logger="agents.speaker_agent"):
+            await agent._handle_event(stale_error, gateway, deduper, router)
+
+        assert interrupts == []
+        assert "ignored stale OpenClaw error after final" in caplog.text
+        assert "seq=23" in caplog.text
+        assert "error=late tool error" in caplog.text
+
+        aborted = chat_event("aborted")
+        await agent._handle_event(aborted, gateway, deduper, router)
+        assert interrupts == [("openclaw_aborted", "run-1")]
+
+    asyncio.run(_runner())
+
+
+def test_speaker_agent_keeps_error_interrupt_when_final_history_is_unconfirmed():
+    async def _runner() -> None:
+        class RecordingSpeech:
+            async def speak(self, text: str) -> None:
+                return None
+
+        class FailingHistoryGateway:
+            async def request(self, method, params, timeout_s=10.0):
+                raise GatewayError("history unavailable")
+
+        config = SpeakerConfig()
+        config.enabled = True
+        config.speaker.mode = "streaming"
+        agent = SpeakerAgent(
+            config=config,
+            speech=RecordingSpeech(),
+            state_store=RuntimeStateStore(None),
+        )
+        gateway = FailingHistoryGateway()
+        router = ChatSpeechRouter(config.gateway, config.speaker.streaming)
+        deduper = MessageDeduper()
+        interrupts = []
+
+        async def record_interrupt(*, reason="api", run_id=None):
+            interrupts.append((reason, run_id))
+            return 0
+
+        agent.interrupt = record_interrupt  # type: ignore[method-assign]
+
+        final = chat_event("final", "Неподтверждённая финальная фраза.")
+        await agent._handle_event(final, gateway, deduper, router)
+        error = chat_event("error")
+        await agent._handle_event(error, gateway, deduper, router)
+
+        assert interrupts == [("openclaw_error", "run-1")]
 
     asyncio.run(_runner())
 

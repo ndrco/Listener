@@ -24,6 +24,8 @@ from speaker.tts import SpeechEngine, SpeechRequest, create_speech_engine
 
 log = logging.getLogger(__name__)
 
+_RECENT_FINALIZED_RUN_LIMIT = 512
+
 
 @dataclass(frozen=True, slots=True)
 class _PlaybackItem:
@@ -460,9 +462,23 @@ class SpeakerAgent:
         self._connected = False
         self._last_error = ""
         self._seen_delta_runs: set[str] = set()
+        self._finalized_runs: dict[str, None] = {}
 
     def _should_listen_to_gateway(self) -> bool:
         return bool(self._config.enabled or self._config.emoji_display.enabled)
+
+    def _remember_finalized_run(self, run_id: str) -> None:
+        normalized = str(run_id or "").strip()
+        if not normalized:
+            return
+        self._finalized_runs[normalized] = None
+        self._seen_delta_runs.discard(normalized)
+        while len(self._finalized_runs) > _RECENT_FINALIZED_RUN_LIMIT:
+            self._finalized_runs.pop(next(iter(self._finalized_runs)))
+
+    def _finish_finalized_run(self, run_id: str) -> None:
+        self._remember_finalized_run(run_id)
+        self._playback.finish_run(run_id)
 
     async def start(self) -> None:
         if self._running:
@@ -670,6 +686,26 @@ class SpeakerAgent:
         run_id = str(payload.get("runId") or "").strip()
         if state in {"aborted", "error"}:
             router.route(event)
+            if state == "error" and run_id in self._finalized_runs:
+                error_message = _preview(str(payload.get("errorMessage") or ""))
+                stop_reason = _preview(str(payload.get("stopReason") or ""))
+                log.warning(
+                    "SpeakerAgent: ignored stale OpenClaw error after final "
+                    "run_id=%s seq=%s error=%s stop_reason=%s",
+                    run_id,
+                    payload.get("seq", "-"),
+                    error_message or "-",
+                    stop_reason or "-",
+                )
+                perf.emit(
+                    "openclaw",
+                    "stale_error_ignored",
+                    run_id=run_id,
+                    seq=payload.get("seq"),
+                    error_message=error_message,
+                    stop_reason=stop_reason,
+                )
+                return
             if run_id:
                 await self.interrupt(reason=f"openclaw_{state}", run_id=run_id)
             return
@@ -699,7 +735,7 @@ class SpeakerAgent:
         deduper.mark_seen(message)
         run_id = str(payload.get("runId") or "final")
         self._enqueue(_message_to_segment(message, run_id, final=True))
-        self._playback.finish_run(run_id)
+        self._finish_finalized_run(run_id)
 
     async def _handle_streaming_event(
         self,
@@ -719,7 +755,7 @@ class SpeakerAgent:
             self._enqueue(segment)
         if not result.needs_history:
             if state == "final":
-                self._playback.finish_run(run_id)
+                self._finish_finalized_run(run_id)
             return
         log.info(
             "SpeakerAgent: final event needs history check run_id=%s known_segments=%d",
@@ -745,7 +781,7 @@ class SpeakerAgent:
         expected_text = router.emitted_text(run_id)
         if deduper.seen(message) and not expected_text:
             router.discard(run_id)
-            self._playback.finish_run(run_id)
+            self._finish_finalized_run(run_id)
             log.debug(
                 "SpeakerAgent: history check skipped seen assistant message run_id=%s message=%s",
                 run_id,
@@ -754,7 +790,7 @@ class SpeakerAgent:
             return
         history_result = router.route_final_text(run_id, message.text)
         if deduper.seen(message) and not history_result.segments:
-            self._playback.finish_run(run_id)
+            self._finish_finalized_run(run_id)
             log.debug(
                 "SpeakerAgent: history check skipped seen assistant message run_id=%s message=%s",
                 run_id,
@@ -770,7 +806,7 @@ class SpeakerAgent:
         )
         for segment in history_result.segments:
             self._enqueue(segment)
-        self._playback.finish_run(run_id)
+        self._finish_finalized_run(run_id)
 
     async def _load_final_history_message(
         self,
