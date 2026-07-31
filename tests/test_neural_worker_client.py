@@ -20,7 +20,16 @@ def _command(*args: str) -> list[str]:
 
 def test_fake_worker_streams_pcm_and_reports_health():
     async def _run() -> None:
-        client = NeuralWorkerClient(_command("--chunks", "3", "--chunk-delay-ms", "0"))
+        normalized: list[str] = []
+
+        def normalize(text: str) -> str:
+            normalized.append(text)
+            return text.replace("Тест", "Нормализованный тест")
+
+        client = NeuralWorkerClient(
+            _command("--chunks", "3", "--chunk-delay-ms", "0"),
+            text_normalizer=normalize,
+        )
         try:
             ready = await client.start()
             health = await client.health()
@@ -38,6 +47,8 @@ def test_fake_worker_streams_pcm_and_reports_health():
             assert {chunk.sample_rate for chunk in chunks} == {24000}
             assert {len(chunk.pcm) for chunk in chunks} == {960}
             assert client.get_status()["running"] is True
+            assert client.get_status()["text_normalization"] is True
+            assert normalized == ["Тест."]
         finally:
             await client.close()
 

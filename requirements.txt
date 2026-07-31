@@ -2,6 +2,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
 
 numpy==1.26.4
+rutextnorm==2.1.0
 sounddevice==0.5.1
 webrtcvad==2.0.10
 torch==2.11.0+cu128

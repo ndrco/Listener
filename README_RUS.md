@@ -315,6 +315,11 @@ worker-процессы работают в изолированных пост�
 ресурсов, настройка стилей и smoke-тесты описаны в
 [docs/neural-tts_RUS.md](docs/neural-tts_RUS.md).
 
+Нормализация русских числовых фрагментов общая для Piper, VoxCPM2 и CosyVoice3,
+включая резервный Piper и создание WAV нейронной моделью. Она включается параметром
+`speaker.tts.normalize_numbers=true`; установите основной `requirements.txt`, чтобы
+в окружении Listener был доступен `rutextnorm`.
+
 При постоянном бэкенде VoxCPM2 или CosyVoice3 тот же загруженный worker может сохранять
 текст в WAV без второго процесса модели:
 
@@ -352,6 +357,9 @@ Prebuffer по умолчанию 150 мс применяется один ра�
     "enabled": true,
     "tts_mode": "persistent",
     "queue_size": 4,
+    "tts": {
+      "normalize_numbers": true
+    },
     "piper": {
       "command": "/home/re/src/Listener/.venv/bin/python3",
       "model": "/path/to/voice.onnx",

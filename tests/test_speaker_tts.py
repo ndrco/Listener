@@ -12,7 +12,7 @@ from audio.ducking import (
     parse_sink_input_volumes,
     restore_all_ducking,
 )
-from speaker.config import PiperConfig
+from speaker.config import PiperConfig, PlaybackConfig
 from speaker.tts import (
     PiperSpeechEngine,
     build_piper_args,
@@ -32,6 +32,7 @@ class SpeechUnitTests(unittest.TestCase):
         engine = create_speech_engine(SpeakerConfig())
 
         self.assertIsInstance(engine, PiperSpeechEngine)
+        self.assertIsNotNone(engine.text_normalizer)
 
     def test_factory_builds_isolated_voxcpm_worker_with_piper_fallback(self):
         from speaker.config import SpeakerConfig
@@ -57,6 +58,8 @@ class SpeechUnitTests(unittest.TestCase):
         self.assertIn("voxcpm2_worker.py", command[1])
         self.assertIn("/tmp/vox-model", command)
         self.assertIn("/tmp/reference.wav", command)
+        self.assertIsNotNone(engine.primary.client.text_normalizer)
+        self.assertIsNotNone(engine.fallback.text_normalizer)
 
     def test_factory_builds_isolated_cosyvoice_worker(self):
         from speaker.config import SpeakerConfig
@@ -86,6 +89,9 @@ class SpeechUnitTests(unittest.TestCase):
         self.assertIn("/tmp/cosy-model", command)
         self.assertIn("/tmp/prompt.wav", command)
         self.assertIn("/tmp/wetext", command)
+        self.assertNotIn("--normalize-numbers", command)
+        self.assertIsNotNone(engine.primary.client.text_normalizer)
+        self.assertIsNotNone(engine.fallback.text_normalizer)
 
     def setUp(self):
         self._ducking_state_dir = TemporaryDirectory()
@@ -127,6 +133,31 @@ class SpeechUnitTests(unittest.TestCase):
 
     def test_split_speech_units_skips_punctuation_only(self):
         self.assertEqual(split_speech_units(". .» 😼"), ["😼"])
+
+    def test_piper_normalizes_text_before_synthesis(self):
+        async def _runner():
+            engine = PiperSpeechEngine(
+                PiperConfig(),
+                PlaybackConfig(),
+                manage_ducking=False,
+                text_normalizer=lambda text: text.replace("2", "два"),
+            )
+            synthesized: list[str] = []
+
+            async def fake_synthesize(text, _output):
+                synthesized.append(text)
+
+            async def fake_play(_output):
+                return None
+
+            engine._synthesize = fake_synthesize  # type: ignore[method-assign]
+            engine._play = fake_play  # type: ignore[method-assign]
+
+            await engine.speak("2 чашки.")
+
+            self.assertEqual(synthesized, ["два чашки."])
+
+        asyncio.run(_runner())
 
     def test_resolve_piper_command_prefers_venv_python_for_entrypoint(self):
         with TemporaryDirectory() as tmp:
