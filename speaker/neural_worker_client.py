@@ -22,7 +22,8 @@ from .neural_protocol import (
     decode_output_header,
     encode_command,
 )
-from .tts import SpeechRequest
+from .text_normalization import TextNormalizer
+from .tts import SpeechRequest, normalize_speech_request
 
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class NeuralWorkerClient:
         cancel_timeout_s: float = 1.0,
         env: Mapping[str, str] | None = None,
         cwd: str | None = None,
+        text_normalizer: TextNormalizer | None = None,
     ) -> None:
         if not command:
             raise ValueError("worker command must not be empty")
@@ -62,6 +64,7 @@ class NeuralWorkerClient:
         self.cancel_timeout_s = max(0.05, float(cancel_timeout_s))
         self.env = dict(env) if env is not None else None
         self.cwd = cwd
+        self.text_normalizer = text_normalizer
         self._proc: asyncio.subprocess.Process | None = None
         self._start_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
@@ -126,7 +129,10 @@ class NeuralWorkerClient:
         owner: str = "default",
         cancellation_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AudioChunk]:
-        speech_request = SpeechRequest.coerce(request)
+        speech_request = normalize_speech_request(
+            SpeechRequest.coerce(request),
+            self.text_normalizer,
+        )
         if not speech_request.text:
             return
         generation_owner = str(owner or "default").strip() or "default"
@@ -276,6 +282,7 @@ class NeuralWorkerClient:
             "started_at": self._started_at,
             "last_error": self._last_error or None,
             "stderr_tail": list(self._stderr_tail),
+            "text_normalization": self.text_normalizer is not None,
         }
 
     async def _send(self, command: dict) -> None:

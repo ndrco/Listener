@@ -51,6 +51,10 @@ devices to `cpu` in `config/config.json`.
 `requirements-optional.txt` now also installs `piper-tts`, which is used by the
 integrated Speaker when spoken replies are enabled.
 
+The main `requirements.txt` also installs `rutextnorm`. Listener uses it for
+narrow Russian numeric normalization before Piper, VoxCPM2, or CosyVoice3; do
+not install it separately into the isolated neural-model environments.
+
 ## 3. Models
 
 Model weights are intentionally not tracked in git. The default config expects:

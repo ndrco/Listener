@@ -138,8 +138,15 @@ def test_renderer_rejects_non_neural_engine(tmp_path: Path):
 
 def test_renderer_reuses_the_same_persistent_worker_process(tmp_path: Path):
     async def _run() -> None:
+        normalized: list[str] = []
+
+        def normalize(text: str) -> str:
+            normalized.append(text)
+            return text
+
         client = NeuralWorkerClient(
-            [sys.executable, str(FAKE_WORKER), "--chunks", "2", "--chunk-delay-ms", "0"]
+            [sys.executable, str(FAKE_WORKER), "--chunks", "2", "--chunk-delay-ms", "0"],
+            text_normalizer=normalize,
         )
         engine = NeuralSpeechEngine(backend="cosyvoice3", client=client)
         renderer = TTSFileRenderer(
@@ -163,6 +170,7 @@ def test_renderer_reuses_the_same_persistent_worker_process(tmp_path: Path):
             ]
             assert len(playback_chunks) == 2
             assert client.get_status()["pid"] == worker_pid
+            assert normalized == ["Файловая реплика.", "Обычная реплика."]
         finally:
             await renderer.close()
             await client.close()

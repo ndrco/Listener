@@ -45,9 +45,15 @@ They are capacity-planning figures, not model guarantees.
 | --- | ---: | ---: |
 | Isolated environment on disk | about 8.0 GiB | about 8.0 GiB |
 | Model snapshot on disk | about 4.7 GiB | about 9.1 GiB |
-| Extra text-normalization data | none | about 21 MiB WeText FST |
+| Worker-specific text-normalization data | none | about 21 MiB WeText FST |
 | Worker model load plus warm-up | about 16.5 s | about 11.4 s in isolated smoke test |
 | Output format seen in tests | mono PCM16, 48 kHz | mono PCM16, 24 kHz |
+
+The shared `rutextnorm` dependency lives in Listener's main environment and
+adds about 0.2 MiB on the tested host. It does not create another process or
+use GPU/model memory. A representative sentence took about 0.23 ms per call
+after warm-up on this host, so its CPU and latency cost is negligible compared
+with synthesis; the exact time remains hardware- and text-dependent.
 
 With the production VoxCPM2 profile, the persistent worker uses approximately
 3.8 GiB resident RAM and 7.0 GiB VRAM. Listener with its CUDA STT and speech
@@ -238,6 +244,7 @@ absolute path, and select exactly one `tts.backend`:
       "generation_timeout_s": 120,
       "cancel_timeout_s": 1,
       "max_consecutive_errors": 3,
+      "normalize_numbers": true,
       "style": {
         "enabled": true,
         "inherit_within_run": true,
@@ -459,6 +466,39 @@ text. CosyVoice3 tokenizes it as an instruct prompt. When
 `enable_vocal_events=true`, the `amused` style can additionally insert its
 supported `[laughter]` event; this is disabled by default because vocal-event
 quality depends on the voice and model revision. Piper ignores style metadata.
+
+### Shared Russian text normalization
+
+`tts.normalize_numbers=true` enables Listener's narrow wrapper around
+`rutextnorm` before dispatch to any TTS backend. It therefore covers Piper,
+VoxCPM2, CosyVoice3, Piper fallback, and neural WAV file rendering consistently.
+Only selected numeric or mathematical spans and their directly associated date,
+time, percentage, currency, or measurement notation are changed. Text outside
+those spans is copied unchanged: Listener does not transliterate Latin words,
+model identifiers, or ordinary assistant text. URLs, IP addresses, phone
+numbers, absolute paths, inline code, and control tokens are protected.
+
+Software versions use an explicit spoken decimal point, for example
+`GPT-5.6-terra` becomes `GPT-пять точка шесть-terra`; the Latin fragments remain
+unchanged. Russian decimal measurements such as `3.5 кг` are treated as `3,5 кг`.
+Style instructions and `[laughter]` tokens are added outside normalization.
+
+The narrow layer also speaks a single mathematical `=` as `равно` and handles
+calendar days with named Russian months (`1 августа` → `первое августа`,
+`с 1 августа` → `с первого августа`). It deliberately does not try to repair
+noun agreement with a partial dictionary: OpenClaw should produce the correct
+source form, such as `2 чашки`. Operators such as `==`, `>=`, and `!=` remain
+unchanged, as do expressions inside protected code spans.
+
+CosyVoice3 still calls its tokenizer directly, so the stock English WeText
+frontend is not applied afterward. `rutextnorm` is installed in Listener's main
+environment through `requirements.txt`; model-specific isolated environments do
+not need it. When normalization is enabled, a missing package is an engine
+creation error; an unexpected per-request normalization error fails open to the
+original text. Disable the feature with `tts.normalize_numbers=false` or
+`SPEAKER_TTS_NORMALIZE_NUMBERS=false`. The old CosyVoice-only config key and
+environment variable are accepted for migration, but the shared names should be
+used for new deployments.
 
 With `leading_emoji_only=true`, a trailing emoji is display-only. With
 `inherit_within_run=true`, a leading emoji styles following sentences in the

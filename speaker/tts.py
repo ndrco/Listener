@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unicodedata
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -26,6 +26,10 @@ except Exception:  # pragma: no cover - handled by playback fallback
 
 from .config import PiperConfig, PlaybackConfig, SpeakerConfig
 from .emoji import extract_emoji_for_speech
+from .text_normalization import (
+    TextNormalizer,
+    create_russian_text_normalizer,
+)
 
 
 class SpeechError(RuntimeError):
@@ -62,6 +66,18 @@ class SpeechRequest:
         return cls(text=str(value or ""))
 
 
+def normalize_speech_request(
+    request: SpeechRequest,
+    normalizer: TextNormalizer | None,
+) -> SpeechRequest:
+    if normalizer is None:
+        return request
+    normalized_text = normalizer(request.text).strip()
+    if normalized_text == request.text:
+        return request
+    return replace(request, text=normalized_text)
+
+
 class SpeechEngine(Protocol):
     async def start(self) -> None:
         ...
@@ -87,11 +103,13 @@ class PiperSpeechEngine:
         *,
         prefetch: bool = False,
         manage_ducking: bool = True,
+        text_normalizer: TextNormalizer | None = None,
     ) -> None:
         self.piper = piper
         self.playback = playback
         self.prefetch = bool(prefetch)
         self.manage_ducking = bool(manage_ducking)
+        self.text_normalizer = text_normalizer
         self._worker: _PiperWorkerClient | None = None
         self._worker_failed = False
         self._active_run_id: str | None = None
@@ -101,7 +119,10 @@ class PiperSpeechEngine:
         return None
 
     async def speak(self, request: SpeechRequest | str) -> None:
-        speech_request = SpeechRequest.coerce(request)
+        speech_request = normalize_speech_request(
+            SpeechRequest.coerce(request),
+            self.text_normalizer,
+        )
         self._active_run_id = speech_request.run_id or None
         parsed = extract_emoji_for_speech(speech_request.text)
         if parsed.tokens:
@@ -184,6 +205,7 @@ class PiperSpeechEngine:
             ),
             "worker_failed": bool(self._worker_failed),
             "active_run_id": self._active_run_id,
+            "text_normalization": self.text_normalizer is not None,
         }
 
     async def _speak_prefetch(self, units: list[str]) -> None:
@@ -345,6 +367,9 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
 
     backend = str(config.tts.backend or "piper").strip().casefold()
     persistent = config.speaker.tts_mode == "persistent"
+    text_normalizer = create_russian_text_normalizer(
+        enabled=config.tts.normalize_numbers,
+    )
     fallback = PiperSpeechEngine(
         config.piper,
         config.playback,
@@ -353,6 +378,7 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
         # playback owns ducking itself so it can wait for the prebuffer; its
         # Piper fallback therefore has to manage ducking independently.
         manage_ducking=not persistent or backend != "piper",
+        text_normalizer=text_normalizer,
     )
     if backend == "piper":
         return fallback
@@ -396,6 +422,7 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
             startup_timeout_s=config.tts.startup_timeout_s,
             generation_timeout_s=config.tts.generation_timeout_s,
             cancel_timeout_s=config.tts.cancel_timeout_s,
+            text_normalizer=text_normalizer,
         )
         primary = NeuralSpeechEngine(
             backend="voxcpm2",
@@ -454,6 +481,7 @@ def create_speech_engine(config: SpeakerConfig) -> SpeechEngine:
             startup_timeout_s=config.tts.startup_timeout_s,
             generation_timeout_s=config.tts.generation_timeout_s,
             cancel_timeout_s=config.tts.cancel_timeout_s,
+            text_normalizer=text_normalizer,
         )
         primary = NeuralSpeechEngine(
             backend="cosyvoice3",

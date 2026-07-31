@@ -309,6 +309,11 @@ checked-in default remains Piper. See [docs/neural-tts.md](docs/neural-tts.md)
 for separate environment installation, model downloads, resource overhead,
 configuration, emoji styling and smoke tests.
 
+Russian numeric text normalization is shared by Piper, VoxCPM2 and CosyVoice3,
+including Piper fallback and neural WAV rendering. It is enabled with
+`speaker.tts.normalize_numbers=true`; install the main `requirements.txt` so the
+Listener environment contains `rutextnorm`.
+
 With a persistent VoxCPM2 or CosyVoice3 backend, the same loaded worker can
 also save text as WAV without a second model process:
 
@@ -346,6 +351,9 @@ Typical config shape:
     "enabled": true,
     "tts_mode": "persistent",
     "queue_size": 4,
+    "tts": {
+      "normalize_numbers": true
+    },
     "piper": {
       "command": "/home/re/src/Listener/.venv/bin/python3",
       "model": "/path/to/voice.onnx",

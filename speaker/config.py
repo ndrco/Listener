@@ -77,6 +77,7 @@ class TTSConfig:
     generation_timeout_s: float = 120.0
     cancel_timeout_s: float = 1.0
     max_consecutive_errors: int = 3
+    normalize_numbers: bool = True
     style: SpeechStyleConfig = field(default_factory=SpeechStyleConfig)
 
 
@@ -249,6 +250,16 @@ class SpeakerConfig:
             # Accept the integrated Listener config shape as well as the flat
             # standalone speaker.json shape.
             data = nested_speaker
+        data = dict(data)
+        legacy_cosyvoice = data.get("cosyvoice3")
+        if isinstance(legacy_cosyvoice, dict) and "normalize_numbers" in legacy_cosyvoice:
+            raw_tts = data.get("tts")
+            tts_data = dict(raw_tts) if isinstance(raw_tts, dict) else {}
+            tts_data.setdefault("normalize_numbers", legacy_cosyvoice["normalize_numbers"])
+            data["tts"] = tts_data
+            cosyvoice_data = dict(legacy_cosyvoice)
+            cosyvoice_data.pop("normalize_numbers", None)
+            data["cosyvoice3"] = cosyvoice_data
         runtime_data = data.get("speaker")
         if not isinstance(runtime_data, dict):
             runtime_keys = set(self.speaker.__dataclass_fields__.keys())
@@ -301,6 +312,17 @@ class SpeakerConfig:
             tts = replace(tts, backend=tts_backend)
         if fallback_backend := os.getenv("SPEAKER_TTS_FALLBACK_BACKEND"):
             tts = replace(tts, fallback_backend=fallback_backend)
+        normalize_numbers = os.getenv("SPEAKER_TTS_NORMALIZE_NUMBERS")
+        if normalize_numbers is None:
+            normalize_numbers = os.getenv("SPEAKER_COSYVOICE3_NORMALIZE_NUMBERS")
+        if normalize_numbers is not None:
+            tts = replace(
+                tts,
+                normalize_numbers=_parse_bool_value(
+                    normalize_numbers,
+                    tts.normalize_numbers,
+                ),
+            )
         if file_render_enabled := os.getenv("SPEAKER_TTS_FILE_RENDER_ENABLED"):
             file_render = replace(
                 file_render,
@@ -456,6 +478,11 @@ def _merge_dataclass(current: Any, raw: Any) -> Any:
             if key in values:
                 values[key] = _parse_bool_value(values[key], getattr(current, key))
     if isinstance(current, TTSConfig):
+        if "normalize_numbers" in values:
+            values["normalize_numbers"] = _parse_bool_value(
+                values["normalize_numbers"],
+                current.normalize_numbers,
+            )
         for key in ("startup_timeout_s", "generation_timeout_s", "cancel_timeout_s"):
             if key in values:
                 values[key] = float(values[key])
@@ -538,6 +565,7 @@ def _normalize_tts_config(config: TTSConfig) -> TTSConfig:
         generation_timeout_s=max(1.0, float(config.generation_timeout_s)),
         cancel_timeout_s=max(0.05, float(config.cancel_timeout_s)),
         max_consecutive_errors=max(1, int(config.max_consecutive_errors)),
+        normalize_numbers=bool(config.normalize_numbers),
         style=replace(
             style,
             enabled=bool(style.enabled),

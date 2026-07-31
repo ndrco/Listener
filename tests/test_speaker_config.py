@@ -31,6 +31,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.tts.backend, "cosyvoice3")
         self.assertEqual(config.cosyvoice3.model_path, "/tmp/cosy")
 
+    def test_shared_tts_number_normalization_can_be_disabled(self):
+        config = SpeakerConfig().merge_dict({"tts": {"normalize_numbers": "false"}})
+
+        self.assertFalse(config.tts.normalize_numbers)
+
+    def test_legacy_cosyvoice_number_normalization_setting_is_migrated(self):
+        config = SpeakerConfig().merge_dict(
+            {"cosyvoice3": {"normalize_numbers": "false"}}
+        )
+
+        self.assertFalse(config.tts.normalize_numbers)
+
     def test_neural_tts_sections_are_merged_and_normalized(self):
         config = SpeakerConfig().merge_dict(
             {

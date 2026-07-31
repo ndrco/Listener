@@ -47,6 +47,7 @@
       "generation_timeout_s": 120,
       "cancel_timeout_s": 1,
       "max_consecutive_errors": 3,
+      "normalize_numbers": true,
       "style": {
         "enabled": true,
         "inherit_within_run": true,
