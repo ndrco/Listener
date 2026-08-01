@@ -157,10 +157,9 @@ If an interrupt or barge-in leaves audio quiet, call
 `listenerctl.py speech_gate_reset` or `systemctl --user reload listener.service`
 to reset SpeechGate/Speaker and restore remembered PipeWire/PulseAudio volumes.
 
-The repository `config/config.json` currently contains a machine-specific example
-pointing at a sibling `/home/re/src/Speaker` checkout. On another machine you
-should either replace those paths or set `speaker.enabled=false` until your
-local Piper setup is ready.
+The default Piper command uses Listener's own `.venv`; its default model is
+`models/ru_RU-irina-medium.onnx`. Place the matching JSON sidecar next to it, or
+set `speaker.enabled=false` until the local Piper setup is ready.
 
 Useful runtime checks:
 

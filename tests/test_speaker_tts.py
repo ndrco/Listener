@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -92,6 +93,18 @@ class SpeechUnitTests(unittest.TestCase):
         self.assertNotIn("--normalize-numbers", command)
         self.assertIsNotNone(engine.primary.client.text_normalizer)
         self.assertIsNotNone(engine.fallback.text_normalizer)
+
+    def test_factory_uses_listener_python_for_neural_workers_by_default(self):
+        from speaker.config import SpeakerConfig
+        from speaker.neural_tts import FallbackSpeechEngine
+
+        for backend in ("voxcpm2", "cosyvoice3"):
+            config = SpeakerConfig().merge_dict({"tts": {"backend": backend}})
+
+            engine = create_speech_engine(config)
+
+            self.assertIsInstance(engine, FallbackSpeechEngine)
+            self.assertEqual(engine.primary.client.command[0], sys.executable)
 
     def setUp(self):
         self._ducking_state_dir = TemporaryDirectory()

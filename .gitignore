@@ -12,9 +12,13 @@ htmlcov/
 *.log
 
 # Virtual envs
-.venv/
+.venv
+.venv-*
 env/
 venv/
+
+# Local deployment snapshots and rollback artifacts
+.deploy-backups/
 
 # Model weights / datasets
 *.pt

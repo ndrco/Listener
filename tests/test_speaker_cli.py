@@ -1,3 +1,5 @@
+import json
+import sys
 from unittest.mock import patch
 
 from speaker.cli import main
@@ -15,6 +17,20 @@ class _SpeechEngine:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_print_config_reports_shared_listener_python(capsys):
+    config = SpeakerConfig()
+    config.gateway.token = "secret"
+
+    with patch("speaker.cli.SpeakerConfig.load", return_value=config):
+        result = main(["print-config"])
+
+    output = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert output["gateway"]["token"] == "<redacted>"
+    assert output["voxcpm2"]["python"] == sys.executable
+    assert output["cosyvoice3"]["python"] == sys.executable
 
 
 def test_say_resolves_leading_emoji_style_for_configured_backend():

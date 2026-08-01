@@ -64,9 +64,6 @@
       "segment_chars": 220
     },
     "voxcpm2": {
-      "python": "/home/re/src/TTS test/VoxCPM2/.mamba/envs/.venv/bin/python",
-      "model_path": "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2",
-      "reference_wav_path": "/home/re/src/TTS test/VoxCPM2/Reference/Nata.wav",
       "device": "cuda",
       "optimize": true,
       "load_denoiser": false,
@@ -78,15 +75,10 @@
       "compile_threads": 4
     },
     "cosyvoice3": {
-      "python": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/.mamba/envs/.venv/bin/python",
-      "repo_path": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice",
-      "model_path": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B",
-      "prompt_wav_path": "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/Reference/Nata.wav",
       "device": "cuda",
       "local_files_only": true,
       "fp16": true,
       "load_trt": false,
-      "wetext_path": "/home/re/.cache/modelscope/hub/pengzhendong/wetext",
       "warmup": true,
       "speed": 1.0,
       "enable_vocal_events": false
@@ -98,8 +90,6 @@
       "history_max_chars": 12000
     },
     "piper": {
-      "command": "/home/re/src/Speaker/.venv/bin/python3",
-      "model": "/home/re/src/Speaker/models/ru_RU-irina-medium.onnx",
       "volume": 0.7,
       "sentence_silence": 0.06,
       "timeout_s": 120

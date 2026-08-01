@@ -2,8 +2,9 @@
 # (Blackwell/sm_120) with a CUDA 12.8-capable NVIDIA driver.
 #
 # CosyVoice upstream currently pins torch 2.3.1+cu121 and ONNX Runtime 1.18.
-# Those pins are not suitable for Blackwell. Keep this environment separate
-# from Listener and VoxCPM2 even when using another GPU profile.
+# Those pins are not suitable for Blackwell. This file is retained for the
+# legacy isolated CosyVoice3 environment; new installs should use
+# requirements-unified-cu128-py312.txt from the repository root.
 --extra-index-url https://download.pytorch.org/whl/cu128
 
 setuptools==80.9.0

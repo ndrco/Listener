@@ -11,28 +11,29 @@ Listener, не загружая второй процесс модели. В к�
 
 Это дополнительная установка. Сначала завершите базовую настройку в
 [`INSTALL_RUS.md`](../INSTALL_RUS.md).
+Для существующей боевой установки используйте поэтапный
+[регламент миграции на единое окружение](unified-tts-migration_RUS.md).
 
-## Почему среды должны быть отдельными
+## Рекомендуемая схема окружения
 
-Не устанавливайте ни один нейронный бэкенд в `.venv` Listener и не помещайте VoxCPM2 и
-CosyVoice3 в одну общую среду. Тестируемая установка использует три независимых среды
-выполнения Python:
+Listener, VoxCPM2 и CosyVoice3 могут работать в одном окружении Python 3.12. Для
+проверенного хоста с RTX 5080 это рекомендуемый профиль:
 
 | Процесс | Python | Важные проверенные версии |
 | --- | --- | --- |
-| Listener | 3.12 | Listener `requirements.txt` |
-| Worker VoxCPM2 | 3.11 | Torch 2.8/cu128, `voxcpm` 2.0.3, NumPy 2.x |
-| Worker CosyVoice3 | 3.10 | Torch 2.8/cu128, Transformers 4.51, NumPy 1.26, ONNX Runtime GPU 1.22 |
+| Listener | 3.12 | Torch 2.11/cu128, Transformers 4.51, NumPy 1.26 |
+| Worker VoxCPM2 | тот же интерпретатор | `voxcpm` 2.0.3, CPU TorchCodec 0.15 |
+| Worker CosyVoice3 | тот же интерпретатор | ONNX Runtime GPU 1.22, ModelScope 1.22 |
 
-CosyVoice напрямую импортирует свой репозиторий и подмодуль Matcha-TTS. VoxCPM2
-использует установленный пакет `voxcpm`. Ограничения по версиям Python, NumPy,
-Transformers, ONNX и аудио различаются; их объединение делает обновления хрупкими и
-может сломать стек STT Listener. Listener запускает только worker-процесс, выбранный
-`speaker.tts.backend`, поэтому установка обоих не потребляет память графического
-процессора для обоих, если не запущены два экземпляра Listener.
+Модели по-прежнему работают в отдельных постоянных дочерних процессах. Такая изоляция
+сохраняет отмену, восстановление после сбоя и fallback на Piper, но по умолчанию оба
+worker-процесса наследуют `sys.executable` Listener. Listener запускает только выбранный
+бэкенд, поэтому общее окружение не загружает обе модели в VRAM.
 
-Интерпретатор worker-процесса задаётся абсолютным путём. Его не нужно активировать в
-помощью оболочки или `systemd`.
+Ключевые совместимые версии: `modelscope==1.22.0` (требование VoxCPM2),
+`transformers==4.51.3` и CPU-only wheel TorchCodec. CPU-wheel декодирует только
+референсное аудио; нейронный инференс остаётся на CUDA. Старые раздельные окружения
+остаются поддержаны через явные поля `python`.
 
 ## Накладные расходы на оборудование и хранилище
 
@@ -43,7 +44,7 @@ Transformers, ONNX и аудио различаются; их объединен
 
 | Параметр | VoxCPM2 | CosyVoice3 |
 | --- | ---: | ---: |
-| Изолированная среда на диске | около 8,0 ГиБ | около 8,0 ГиБ |
+| Дополнительное отдельное окружение | не требуется | не требуется |
 | Снимок модели на диске | около 4,7 ГиБ | около 9,1 ГиБ |
 | Данные нормализации только для worker | нет | около 21 МБ WeText FST |
 | Загрузка worker-модели и прогрев | около 16,5 с | около 11,4 с в изолированном smoke-тесте |
@@ -68,9 +69,9 @@ VRAM CosyVoice3 зависит от провайдеров ONNX, `fp16`, TensorR
 оба нейронных worker-процесса вместе с CUDA STT. В штатном режиме Listener запускает
 только один из них.
 
-Установка обеих протестированных сред и обоих снимков модели занимает около 30 ГиБ без
-учёта кэшей пакетов и моделей. Во время загрузки снимка для кэшей может потребоваться
-место ещё под одну копию модели.
+Проверенное единое окружение занимает около 8,6 ГиБ без части опциональных пакетов
+Listener и заменяет примерно 23 ГиБ прежних трёх окружений. Снимкам моделей всё ещё
+нужно около 14 ГиБ; при загрузке кэш может временно потребовать ещё одну копию.
 
 Полезные измерения после запуска:
 
@@ -100,10 +101,49 @@ export LISTENER_ROOT=/absolute/path/to/Listener
 export TTS_ROOT=/opt/listener-tts
 ```
 
-Переменные предназначены только для удобства установки. Пути, записанные в JSON, должны
-быть абсолютными; Listener не расширяет переменные оболочки в `config.json`.
+Переменные предназначены только для удобства установки. Пути в JSON могут быть
+абсолютными или относительными к корню проекта Listener; переменные оболочки в
+`config.json` не раскрываются.
 
-## Установка VoxCPM2
+## Установка единого окружения Python 3.12
+
+Для новой установки создайте окружение Listener и установите единый профиль вместо
+двух старых файлов зависимостей:
+
+```bash
+cd "$LISTENER_ROOT"
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements-unified-cu128-py312.txt
+.venv/bin/python -m pip check
+```
+
+Не заменяйте URL CPU-only TorchCodec стандартным wheel. На проверенном хосте с CUDA
+12.8 стандартный TorchCodec 0.15 искал `libnvrtc.so.13`. Закреплённый CPU-wheel
+устраняет ошибку загрузчика и не меняет размещение инференса.
+
+Храните ресурсы моделей внутри корня Listener, чтобы production не зависел от
+разработческого checkout:
+
+```text
+models/tts/voxcpm2/model/
+models/tts/cosyvoice3/CosyVoice/
+models/tts/cosyvoice3/wetext/
+references/voxcpm2/Nata.wav
+references/cosyvoice3/Nata.wav
+```
+
+Каталог CosyVoice должен содержать подмодуль `third_party/Matcha-TTS` и модель в
+`pretrained_models/Fun-CosyVoice3-0.5B`. Это стандартные пути Listener, поэтому поля
+путей можно не указывать в `config.json`. Для другой раскладки поддерживаются
+относительные и абсолютные override-пути.
+
+## Старые раздельные окружения
+
+Следующие два раздела сохранены для отката и машин, где проверенный профиль Python 3.12
+не подходит. При их использовании явно задайте поле `python` соответствующего бэкенда.
+
+### Установка VoxCPM2 в отдельное окружение
 
 Создайте среду Python 3.11 и установите протестированный профиль Blackwell:
 
@@ -155,7 +195,7 @@ print(VoxCPM)
 PY
 ```
 
-## Установка CosyVoice3
+### Установка CosyVoice3 в отдельное окружение
 
 Клонируйте CosyVoice рекурсивно. Субмодуль Matcha-TTS является обязательным:
 
@@ -231,9 +271,8 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
 ## Конфигурация Listener
 
 Для нейронных бэкендов требуется `speaker.tts_mode="persistent"`. Возьмите за основу
-следующую структуру,
-замените каждый путь `/opt/listener-tts` реальным абсолютным путем установки и выберите
-ровно один `tts.backend`:
+следующую структуру и выберите ровно один `tts.backend`. Стандартные самодостаточные
+пути ресурсов повторять в конфиге не требуется:
 
 ```json
 {
@@ -264,9 +303,6 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
       "segment_chars": 220
     },
     "voxcpm2": {
-      "python": "/opt/listener-tts/VoxCPM2/env/bin/python",
-      "model_path": "/opt/listener-tts/VoxCPM2/models/VoxCPM2",
-      "reference_wav_path": "/opt/listener-tts/VoxCPM2/reference/voice.wav",
       "device": "cuda",
       "optimize": true,
       "load_denoiser": false,
@@ -278,15 +314,10 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
       "compile_threads": 4
     },
     "cosyvoice3": {
-      "python": "/opt/listener-tts/CosyVoice3/env/bin/python",
-      "repo_path": "/opt/listener-tts/CosyVoice3/CosyVoice",
-      "model_path": "/opt/listener-tts/CosyVoice3/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B",
-      "prompt_wav_path": "/opt/listener-tts/CosyVoice3/reference/voice.wav",
       "device": "cuda",
       "local_files_only": true,
       "fp16": true,
       "load_trt": false,
-      "wetext_path": "/opt/listener-tts/CosyVoice3/models/wetext",
       "warmup": true,
       "speed": 1.0,
       "enable_vocal_events": false
@@ -294,6 +325,10 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
   }
 }
 ```
+
+Если поле `python` отсутствует, оба worker-процесса используют тот же интерпретатор,
+что и Listener. Для старого раздельного окружения по-прежнему можно указать абсолютный
+путь `python`.
 
 Чтобы использовать CosyVoice3, измените только:
 
