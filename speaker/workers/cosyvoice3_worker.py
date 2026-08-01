@@ -20,6 +20,35 @@ from speaker.workers.runtime import WorkerRuntime  # noqa: E402
 SYSTEM_PROMPT = "You are a helpful assistant."
 
 
+def load_wav_with_soundfile(wav: Any, target_sr: int, min_sr: int = 16000) -> Any:
+    """Load a reference WAV without invoking TorchCodec through torchaudio.load()."""
+    import soundfile as sf
+    import torch
+
+    audio, sample_rate = sf.read(wav, dtype="float32", always_2d=True)
+    speech = torch.from_numpy(audio.T).mean(dim=0, keepdim=True)
+    if sample_rate != target_sr:
+        from torchaudio.functional import resample
+
+        if sample_rate < min_sr:
+            raise ValueError(
+                f"wav sample rate {sample_rate} must be at least {min_sr}"
+            )
+        speech = resample(speech, orig_freq=sample_rate, new_freq=target_sr)
+    return speech
+
+
+def install_soundfile_wav_loader() -> None:
+    """Patch both CosyVoice bindings of load_wav before reference extraction."""
+    from importlib import import_module
+
+    frontend_module = import_module("cosyvoice.cli.frontend")
+    file_utils_module = import_module("cosyvoice.utils.file_utils")
+
+    frontend_module.load_wav = load_wav_with_soundfile
+    file_utils_module.load_wav = load_wav_with_soundfile
+
+
 class CosyVoice3Worker:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -100,6 +129,7 @@ class CosyVoice3Worker:
         import torch
         from cosyvoice.cli.cosyvoice import AutoModel
 
+        install_soundfile_wav_loader()
         self.np = np
         self.torch = torch
         if self.args.device.startswith("cuda"):

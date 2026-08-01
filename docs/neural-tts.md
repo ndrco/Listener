@@ -11,28 +11,30 @@ default remains Piper.
 
 This is an optional installation. Complete the base setup in
 [`INSTALL.md`](../INSTALL.md) first.
+For an existing production installation, follow the staged
+[unified-environment migration runbook](unified-tts-migration.md).
 
-## Why the environments must be separate
+## Recommended environment layout
 
-Do not install either neural backend into Listener's `.venv`, and do not put
-VoxCPM2 and CosyVoice3 into one shared environment. The tested installation
-uses three independent Python runtimes:
+Listener, VoxCPM2, and CosyVoice3 can use one Python 3.12 environment. This is
+the recommended profile for the tested RTX 5080 host:
 
 | Process | Python | Important tested pins |
 | --- | --- | --- |
-| Listener | 3.12 | Listener `requirements.txt` |
-| VoxCPM2 worker | 3.11 | Torch 2.8/cu128, `voxcpm` 2.0.3, NumPy 2.x |
-| CosyVoice3 worker | 3.10 | Torch 2.8/cu128, Transformers 4.51, NumPy 1.26, ONNX Runtime GPU 1.22 |
+| Listener | 3.12 | Torch 2.11/cu128, Transformers 4.51, NumPy 1.26 |
+| VoxCPM2 worker | same interpreter | `voxcpm` 2.0.3, CPU TorchCodec 0.15 |
+| CosyVoice3 worker | same interpreter | ONNX Runtime GPU 1.22, ModelScope 1.22 |
 
-CosyVoice imports its repository and Matcha-TTS submodule directly. VoxCPM2
-uses the installed `voxcpm` package. Their Python, NumPy, Transformers, ONNX
-and audio dependency constraints differ; merging them makes upgrades fragile
-and can break Listener's STT stack. Listener starts only the worker selected by
-`speaker.tts.backend`, so installing both does not consume GPU memory for both
-unless two Listener instances are started.
+The models still run in separate persistent child processes. Process isolation
+keeps cancellation, crash recovery, and Piper fallback intact, but both workers
+now inherit Listener's `sys.executable` unless an explicit `python` path is set.
+Listener starts only the selected backend, so the unified installation does not
+load both models into VRAM.
 
-The worker interpreter is configured with an absolute path. It never needs to
-be activated by a shell or by `systemd`.
+The important compatibility choices are `modelscope==1.22.0` (required by
+VoxCPM2), `transformers==4.51.3`, and the CPU-only TorchCodec wheel. The CPU
+wheel only decodes reference audio; CUDA inference remains unchanged. Separate
+legacy environments remain supported through explicit `python` fields.
 
 ## Hardware and storage overhead
 
@@ -43,7 +45,7 @@ They are capacity-planning figures, not model guarantees.
 
 | Item | VoxCPM2 | CosyVoice3 |
 | --- | ---: | ---: |
-| Isolated environment on disk | about 8.0 GiB | about 8.0 GiB |
+| Additional isolated environment on disk | none | none |
 | Model snapshot on disk | about 4.7 GiB | about 9.1 GiB |
 | Worker-specific text-normalization data | none | about 21 MiB WeText FST |
 | Worker model load plus warm-up | about 16.5 s | about 11.4 s in isolated smoke test |
@@ -66,9 +68,10 @@ revision, so measure it on the target installation rather than treating the
 weight-file size as VRAM usage. On a 16 GB GPU, do not run both neural workers
 at once alongside CUDA STT. Normal Listener operation starts only one.
 
-Installing both tested environments and both model snapshots consumes roughly
-30 GiB before package/model caches. Caches can require another copy while a
-snapshot is downloading.
+The tested unified environment occupies about 8.6 GiB before optional Listener
+packages, replacing roughly 23 GiB across the former three environments. The
+model snapshots still require about 14 GiB, and download caches can temporarily
+require another copy.
 
 Useful measurements after startup:
 
@@ -101,7 +104,35 @@ export TTS_ROOT=/opt/listener-tts
 The variables are conveniences for installation only. Paths written to JSON
 must be absolute; Listener does not expand shell variables in `config.json`.
 
-## Install VoxCPM2
+## Install the unified Python 3.12 environment
+
+For a new installation, create Listener's environment and install the unified
+profile instead of the two legacy requirement files:
+
+```bash
+cd "$LISTENER_ROOT"
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements-unified-cu128-py312.txt
+.venv/bin/python -m pip check
+```
+
+Do not replace the CPU-only TorchCodec URL with the default wheel. TorchCodec
+0.15's default wheel looked for `libnvrtc.so.13` on the tested CUDA 12.8 host.
+The pinned CPU wheel avoids that loader failure and has no effect on neural
+inference placement.
+
+The model repositories, snapshots, reference WAV files, and WeText FST files
+are still installed as described below. Skip creation of `VOX_ENV` and
+`COSY_ENV`; run download and import commands with `$LISTENER_ROOT/.venv/bin/python`.
+
+## Legacy isolated environments
+
+The following two sections are retained for rollback and installations that
+cannot use the tested Python 3.12 profile. Set each backend's `python` field to
+the corresponding interpreter when using them.
+
+### Install VoxCPM2 in an isolated environment
 
 Create a Python 3.11 environment and install the tested Blackwell profile:
 
@@ -153,7 +184,7 @@ print(VoxCPM)
 PY
 ```
 
-## Install CosyVoice3
+### Install CosyVoice3 in an isolated environment
 
 Clone CosyVoice recursively. The Matcha-TTS submodule is mandatory:
 
@@ -261,7 +292,6 @@ absolute path, and select exactly one `tts.backend`:
       "segment_chars": 220
     },
     "voxcpm2": {
-      "python": "/opt/listener-tts/VoxCPM2/env/bin/python",
       "model_path": "/opt/listener-tts/VoxCPM2/models/VoxCPM2",
       "reference_wav_path": "/opt/listener-tts/VoxCPM2/reference/voice.wav",
       "device": "cuda",
@@ -275,7 +305,6 @@ absolute path, and select exactly one `tts.backend`:
       "compile_threads": 4
     },
     "cosyvoice3": {
-      "python": "/opt/listener-tts/CosyVoice3/env/bin/python",
       "repo_path": "/opt/listener-tts/CosyVoice3/CosyVoice",
       "model_path": "/opt/listener-tts/CosyVoice3/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B",
       "prompt_wav_path": "/opt/listener-tts/CosyVoice3/reference/voice.wav",
@@ -291,6 +320,9 @@ absolute path, and select exactly one `tts.backend`:
   }
 }
 ```
+
+Omitting `python` makes both workers use the same interpreter as Listener. An
+absolute `python` path is still accepted for a legacy isolated environment.
 
 To use CosyVoice3, change only:
 

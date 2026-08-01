@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,11 @@ TTS_BACKENDS = {"piper", "voxcpm2", "cosyvoice3"}
 
 def default_piper_command() -> str:
     return str(PROJECT_ROOT / ".venv" / "bin" / "python3")
+
+
+def default_neural_tts_python() -> str:
+    """Run neural workers in the same environment as Listener by default."""
+    return sys.executable
 
 
 def default_piper_model() -> str:
@@ -93,7 +99,7 @@ class TTSFileRenderConfig:
 
 @dataclass(slots=True)
 class VoxCPM2Config:
-    python: str = "/home/re/src/TTS test/VoxCPM2/.mamba/envs/.venv/bin/python"
+    python: str = field(default_factory=default_neural_tts_python)
     model_path: str = "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2"
     reference_wav_path: str = "/home/re/src/TTS test/VoxCPM2/Reference/Nata.wav"
     prompt_text: str = ""
@@ -110,7 +116,7 @@ class VoxCPM2Config:
 
 @dataclass(slots=True)
 class CosyVoice3Config:
-    python: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/.mamba/envs/.venv/bin/python"
+    python: str = field(default_factory=default_neural_tts_python)
     repo_path: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice"
     model_path: str = (
         "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice/"
@@ -592,7 +598,7 @@ def _normalize_file_render_config(config: TTSFileRenderConfig) -> TTSFileRenderC
 def _normalize_voxcpm2_config(config: VoxCPM2Config) -> VoxCPM2Config:
     return replace(
         config,
-        python=str(config.python or "").strip(),
+        python=str(config.python or "").strip() or default_neural_tts_python(),
         model_path=str(config.model_path or "").strip(),
         reference_wav_path=str(config.reference_wav_path or "").strip(),
         prompt_text=str(config.prompt_text or "").strip(),
@@ -611,7 +617,7 @@ def _normalize_voxcpm2_config(config: VoxCPM2Config) -> VoxCPM2Config:
 def _normalize_cosyvoice3_config(config: CosyVoice3Config) -> CosyVoice3Config:
     return replace(
         config,
-        python=str(config.python or "").strip(),
+        python=str(config.python or "").strip() or default_neural_tts_python(),
         repo_path=str(config.repo_path or "").strip(),
         model_path=str(config.model_path or "").strip(),
         prompt_wav_path=str(config.prompt_wav_path or "").strip(),

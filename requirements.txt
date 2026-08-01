@@ -9,5 +9,5 @@ torch==2.11.0+cu128
 faster-whisper==1.0.3
 nvidia-cublas-cu12==12.8.4.1
 nvidia-cudnn-cu12==9.19.0.56
-transformers==4.41.2
+transformers==4.51.3
 websockets>=10,<13

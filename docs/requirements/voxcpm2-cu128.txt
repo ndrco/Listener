@@ -1,5 +1,7 @@
 # Tested Listener VoxCPM2 worker environment for RTX 50-series
 # (Blackwell/sm_120) with a CUDA 12.8-capable NVIDIA driver.
+# Legacy isolated Python 3.11 profile; new installs should use
+# requirements-unified-cu128-py312.txt from the repository root.
 --extra-index-url https://download.pytorch.org/whl/cu128
 
 setuptools==80.9.0

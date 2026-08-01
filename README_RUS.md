@@ -54,6 +54,8 @@ OpenClaw skill   -> Control API  -> same neural worker -> WAV file
 ## Быстрый старт
 
 Полное руководство по установке см. в [INSTALL_RUS.md](INSTALL_RUS.md).
+Дополнительное единое окружение Python 3.12 для Listener, VoxCPM2 и CosyVoice3
+описано в [docs/neural-tts_RUS.md](docs/neural-tts_RUS.md).
 
 ```bash
 git clone <repository-url>

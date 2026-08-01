@@ -51,6 +51,8 @@ Core modules:
 ## Quick Start
 
 See [INSTALL.md](INSTALL.md) for the full setup guide.
+The optional unified Python 3.12 environment for Listener, VoxCPM2, and
+CosyVoice3 is documented in [docs/neural-tts.md](docs/neural-tts.md).
 
 ```bash
 git clone <repository-url>

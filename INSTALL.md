@@ -89,9 +89,15 @@ Speaker for the first run:
 }
 ```
 
-For the optional VoxCPM2 or Fun-CosyVoice3-0.5B backends, do not install their
-dependencies into Listener's `.venv`. Each backend needs its own persistent
-worker environment. The complete, tested installation and sizing guide is
+For the optional VoxCPM2 or Fun-CosyVoice3-0.5B backends, install the tested
+unified Python 3.12 profile instead of the two commands above:
+
+```bash
+pip install -r requirements-unified-cu128-py312.txt
+```
+
+Both models keep their own persistent worker process but use Listener's Python
+environment by default. The complete installation, sizing, and rollback guide is
 [docs/neural-tts.md](docs/neural-tts.md).
 
 If you want a self-contained Listener setup, use the Listener virtualenv as the

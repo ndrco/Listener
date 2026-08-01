@@ -1,4 +1,5 @@
 import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +13,23 @@ class ConfigTests(unittest.TestCase):
         config = SpeakerConfig().merge_dict({"enabled": True})
 
         self.assertEqual(config.tts.backend, "piper")
+
+    def test_neural_workers_default_to_listener_python(self):
+        config = SpeakerConfig()
+
+        self.assertEqual(config.voxcpm2.python, sys.executable)
+        self.assertEqual(config.cosyvoice3.python, sys.executable)
+
+    def test_blank_neural_worker_python_falls_back_to_listener_python(self):
+        config = SpeakerConfig().merge_dict(
+            {
+                "voxcpm2": {"python": "  "},
+                "cosyvoice3": {"python": ""},
+            }
+        )
+
+        self.assertEqual(config.voxcpm2.python, sys.executable)
+        self.assertEqual(config.cosyvoice3.python, sys.executable)
 
     def test_integrated_listener_speaker_section_is_supported(self):
         config = SpeakerConfig().merge_dict(
