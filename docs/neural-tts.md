@@ -101,8 +101,9 @@ export LISTENER_ROOT=/absolute/path/to/Listener
 export TTS_ROOT=/opt/listener-tts
 ```
 
-The variables are conveniences for installation only. Paths written to JSON
-must be absolute; Listener does not expand shell variables in `config.json`.
+The variables are conveniences for installation only. Paths in JSON may be
+absolute or relative to the Listener project root; shell variables are not
+expanded in `config.json`.
 
 ## Install the unified Python 3.12 environment
 
@@ -122,9 +123,21 @@ Do not replace the CPU-only TorchCodec URL with the default wheel. TorchCodec
 The pinned CPU wheel avoids that loader failure and has no effect on neural
 inference placement.
 
-The model repositories, snapshots, reference WAV files, and WeText FST files
-are still installed as described below. Skip creation of `VOX_ENV` and
-`COSY_ENV`; run download and import commands with `$LISTENER_ROOT/.venv/bin/python`.
+Store model assets under the Listener project root so production does not
+depend on a development checkout:
+
+```text
+models/tts/voxcpm2/model/
+models/tts/cosyvoice3/CosyVoice/
+models/tts/cosyvoice3/wetext/
+references/voxcpm2/Nata.wav
+references/cosyvoice3/Nata.wav
+```
+
+The CosyVoice directory must contain its `third_party/Matcha-TTS` submodule and
+the model at `pretrained_models/Fun-CosyVoice3-0.5B`. These are Listener's
+defaults, so their path fields can be omitted from `config.json`. For another
+layout, relative or absolute path overrides remain supported.
 
 ## Legacy isolated environments
 
@@ -260,8 +273,8 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
 ## Listener configuration
 
 Neural backends require `speaker.tts_mode="persistent"`. Start from this
-shape, replace every `/opt/listener-tts` path with the installation's real
-absolute path, and select exactly one `tts.backend`:
+shape and select exactly one `tts.backend`. The standard self-contained asset
+paths do not need to be repeated in this config:
 
 ```json
 {
@@ -292,8 +305,6 @@ absolute path, and select exactly one `tts.backend`:
       "segment_chars": 220
     },
     "voxcpm2": {
-      "model_path": "/opt/listener-tts/VoxCPM2/models/VoxCPM2",
-      "reference_wav_path": "/opt/listener-tts/VoxCPM2/reference/voice.wav",
       "device": "cuda",
       "optimize": true,
       "load_denoiser": false,
@@ -305,14 +316,10 @@ absolute path, and select exactly one `tts.backend`:
       "compile_threads": 4
     },
     "cosyvoice3": {
-      "repo_path": "/opt/listener-tts/CosyVoice3/CosyVoice",
-      "model_path": "/opt/listener-tts/CosyVoice3/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B",
-      "prompt_wav_path": "/opt/listener-tts/CosyVoice3/reference/voice.wav",
       "device": "cuda",
       "local_files_only": true,
       "fp16": true,
       "load_trt": false,
-      "wetext_path": "/opt/listener-tts/CosyVoice3/models/wetext",
       "warmup": true,
       "speed": 1.0,
       "enable_vocal_events": false

@@ -106,12 +106,12 @@ Important sections:
 - `audio.stt` - Whisper model and decoding settings.
 - `events` - internal EventBus topic names.
 
-The repository config currently contains a local-machine `speaker` example with
-paths under `/home/re/src/Speaker`. On a fresh clone you should either:
+Piper uses Listener's `.venv/bin/python3` and
+`models/ru_RU-irina-medium.onnx` by default. On a fresh clone you should either:
 
 - set `speaker.enabled=false` for the first run; or
-- replace `speaker.piper.command`, `speaker.piper.model`, and if needed
-  `speaker.gateway.*` with values valid on your machine.
+- install `piper-tts`, place a compatible model and its JSON sidecar under
+  `models/`, and configure `speaker.gateway.*` if needed.
 
 The primary SpeechGate pattern source is `config/speech_gate_patterns.json`.
 Inline pattern arrays in `config/config.json` are supported as overrides, but

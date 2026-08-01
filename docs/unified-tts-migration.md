@@ -28,6 +28,22 @@ The unified requirements deliberately use the CPU-only TorchCodec wheel. It
 decodes reference audio on CPU while PyTorch, Whisper, VoxCPM2, and CosyVoice3
 continue to use CUDA.
 
+Copy external model assets into the production checkout before changing the
+config. Keep the old directories for rollback:
+
+```bash
+mkdir -p models/tts/voxcpm2/model models/tts/cosyvoice3 references/voxcpm2 references/cosyvoice3
+rsync -a /old/VoxCPM2/models/VoxCPM2/ models/tts/voxcpm2/model/
+rsync -a --exclude='.git/' /old/CosyVoice/ models/tts/cosyvoice3/CosyVoice/
+rsync -a /old/wetext/ models/tts/cosyvoice3/wetext/
+rsync -a /old/VoxCPM2/Reference/Nata.wav references/voxcpm2/Nata.wav
+rsync -a /old/CosyVoice3/Reference/Nata.wav references/cosyvoice3/Nata.wav
+```
+
+The standard paths are computed relative to Listener's project root. Remove
+the old `model_path`, `reference_wav_path`, `repo_path`, `prompt_wav_path`, and
+`wetext_path` fields from the deployed config to use them.
+
 ## Pre-switch checks
 
 ```bash
@@ -51,8 +67,8 @@ CUDA execution, PCM streaming, and shutdown.
 
 ## Switch production
 
-Make sure `voxcpm2.python` and `cosyvoice3.python` are absent from the deployed
-config, or point both to the new Listener interpreter. Then stop the service,
+Make sure the backend `python` fields and obsolete external asset paths are
+absent from the deployed config. Then stop the service,
 swap the environment directories, and start it again:
 
 ```bash

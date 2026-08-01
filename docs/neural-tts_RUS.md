@@ -101,8 +101,9 @@ export LISTENER_ROOT=/absolute/path/to/Listener
 export TTS_ROOT=/opt/listener-tts
 ```
 
-Переменные предназначены только для удобства установки. Пути, записанные в JSON, должны
-быть абсолютными; Listener не расширяет переменные оболочки в `config.json`.
+Переменные предназначены только для удобства установки. Пути в JSON могут быть
+абсолютными или относительными к корню проекта Listener; переменные оболочки в
+`config.json` не раскрываются.
 
 ## Установка единого окружения Python 3.12
 
@@ -121,9 +122,21 @@ python3.12 -m venv .venv
 12.8 стандартный TorchCodec 0.15 искал `libnvrtc.so.13`. Закреплённый CPU-wheel
 устраняет ошибку загрузчика и не меняет размещение инференса.
 
-Репозитории моделей, снимки, референсные WAV и FST-файлы WeText устанавливаются, как
-описано ниже. Не создавайте `VOX_ENV` и `COSY_ENV`; команды загрузки и проверки
-запускайте через `$LISTENER_ROOT/.venv/bin/python`.
+Храните ресурсы моделей внутри корня Listener, чтобы production не зависел от
+разработческого checkout:
+
+```text
+models/tts/voxcpm2/model/
+models/tts/cosyvoice3/CosyVoice/
+models/tts/cosyvoice3/wetext/
+references/voxcpm2/Nata.wav
+references/cosyvoice3/Nata.wav
+```
+
+Каталог CosyVoice должен содержать подмодуль `third_party/Matcha-TTS` и модель в
+`pretrained_models/Fun-CosyVoice3-0.5B`. Это стандартные пути Listener, поэтому поля
+путей можно не указывать в `config.json`. Для другой раскладки поддерживаются
+относительные и абсолютные override-пути.
 
 ## Старые раздельные окружения
 
@@ -258,9 +271,8 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
 ## Конфигурация Listener
 
 Для нейронных бэкендов требуется `speaker.tts_mode="persistent"`. Возьмите за основу
-следующую структуру,
-замените каждый путь `/opt/listener-tts` реальным абсолютным путем установки и выберите
-ровно один `tts.backend`:
+следующую структуру и выберите ровно один `tts.backend`. Стандартные самодостаточные
+пути ресурсов повторять в конфиге не требуется:
 
 ```json
 {
@@ -291,8 +303,6 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
       "segment_chars": 220
     },
     "voxcpm2": {
-      "model_path": "/opt/listener-tts/VoxCPM2/models/VoxCPM2",
-      "reference_wav_path": "/opt/listener-tts/VoxCPM2/reference/voice.wav",
       "device": "cuda",
       "optimize": true,
       "load_denoiser": false,
@@ -304,14 +314,10 @@ test -f "$WETEXT_DIR/en/tn/tagger.fst"
       "compile_threads": 4
     },
     "cosyvoice3": {
-      "repo_path": "/opt/listener-tts/CosyVoice3/CosyVoice",
-      "model_path": "/opt/listener-tts/CosyVoice3/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B",
-      "prompt_wav_path": "/opt/listener-tts/CosyVoice3/reference/voice.wav",
       "device": "cuda",
       "local_files_only": true,
       "fp16": true,
       "load_trt": false,
-      "wetext_path": "/opt/listener-tts/CosyVoice3/models/wetext",
       "warmup": true,
       "speed": 1.0,
       "enable_vocal_events": false

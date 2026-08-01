@@ -110,12 +110,12 @@ journalctl --user -u listener.service -f
 - `audio.stt` — модель Whisper и настройки декодирования.
 - `events` — внутренние имена тем EventBus.
 
-Конфигурация репозитория содержит локальный пример `speaker` с путями внутри
-`/home/re/src/Speaker`. В новом клоне следует выполнить одно из действий:
+По умолчанию Piper использует `.venv/bin/python3` Listener и модель
+`models/ru_RU-irina-medium.onnx`. В новом клоне следует выполнить одно из действий:
 
 - установить `speaker.enabled=false` для первого запуска; либо
-- заменить `speaker.piper.command`, `speaker.piper.model` и, при необходимости,
-  `speaker.gateway.*` значениями, действительными на вашем компьютере.
+- установить `piper-tts`, поместить совместимую модель и её JSON-файл в `models/` и,
+  при необходимости, настроить `speaker.gateway.*`.
 
 Основным источником шаблона SpeechGate является `config/speech_gate_patterns.json`.
 Встроенные массивы шаблонов в `config/config.json` поддерживаются как переопределения,

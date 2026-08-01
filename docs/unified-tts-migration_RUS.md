@@ -27,6 +27,22 @@ mkdir -p .deploy-backups/20260801-unified-env
 референсное аудио на CPU, а PyTorch, Whisper, VoxCPM2 и CosyVoice3 продолжают работать
 на CUDA.
 
+До изменения конфига скопируйте внешние ресурсы моделей внутрь боевого checkout.
+Старые каталоги оставьте для отката:
+
+```bash
+mkdir -p models/tts/voxcpm2/model models/tts/cosyvoice3 references/voxcpm2 references/cosyvoice3
+rsync -a /old/VoxCPM2/models/VoxCPM2/ models/tts/voxcpm2/model/
+rsync -a --exclude='.git/' /old/CosyVoice/ models/tts/cosyvoice3/CosyVoice/
+rsync -a /old/wetext/ models/tts/cosyvoice3/wetext/
+rsync -a /old/VoxCPM2/Reference/Nata.wav references/voxcpm2/Nata.wav
+rsync -a /old/CosyVoice3/Reference/Nata.wav references/cosyvoice3/Nata.wav
+```
+
+Стандартные пути вычисляются относительно корня проекта Listener. Удалите из боевого
+конфига старые поля `model_path`, `reference_wav_path`, `repo_path`, `prompt_wav_path`
+и `wetext_path`, чтобы использовать новую раскладку.
+
 ## Проверки до переключения
 
 ```bash
@@ -50,8 +66,8 @@ PY
 
 ## Переключение продакшна
 
-Убедитесь, что `voxcpm2.python` и `cosyvoice3.python` отсутствуют в боевом конфиге либо
-оба указывают на новый интерпретатор Listener. Затем остановите службу, поменяйте
+Убедитесь, что поля `python` бэкендов и устаревшие внешние пути отсутствуют в боевом
+конфиге. Затем остановите службу, поменяйте
 каталоги окружений и снова запустите её:
 
 ```bash

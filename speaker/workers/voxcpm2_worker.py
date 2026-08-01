@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent VoxCPM2 worker; must run with the model's own Python environment."""
+"""Persistent VoxCPM2 worker for the shared or an explicitly isolated environment."""
 
 from __future__ import annotations
 

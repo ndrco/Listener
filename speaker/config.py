@@ -11,6 +11,8 @@ DEFAULT_OPENCLAW_CONFIG = Path.home() / ".openclaw" / "openclaw.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "speaker.json"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
+DEFAULT_TTS_MODELS_DIR = DEFAULT_MODELS_DIR / "tts"
+DEFAULT_REFERENCES_DIR = PROJECT_ROOT / "references"
 LEGACY_PIPER_DIR = PROJECT_ROOT / "piper"
 DEFAULT_PLAYER_COMMAND = "/usr/bin/paplay"
 SPEAKER_MODES = {"streaming", "final"}
@@ -25,6 +27,34 @@ def default_piper_command() -> str:
 def default_neural_tts_python() -> str:
     """Run neural workers in the same environment as Listener by default."""
     return sys.executable
+
+
+def default_voxcpm2_model_path() -> str:
+    return str(DEFAULT_TTS_MODELS_DIR / "voxcpm2" / "model")
+
+
+def default_voxcpm2_reference_wav_path() -> str:
+    return str(DEFAULT_REFERENCES_DIR / "voxcpm2" / "Nata.wav")
+
+
+def default_cosyvoice3_repo_path() -> str:
+    return str(DEFAULT_TTS_MODELS_DIR / "cosyvoice3" / "CosyVoice")
+
+
+def default_cosyvoice3_model_path() -> str:
+    return str(
+        Path(default_cosyvoice3_repo_path())
+        / "pretrained_models"
+        / "Fun-CosyVoice3-0.5B"
+    )
+
+
+def default_cosyvoice3_prompt_wav_path() -> str:
+    return str(DEFAULT_REFERENCES_DIR / "cosyvoice3" / "Nata.wav")
+
+
+def default_cosyvoice3_wetext_path() -> str:
+    return str(DEFAULT_TTS_MODELS_DIR / "cosyvoice3" / "wetext")
 
 
 def default_piper_model() -> str:
@@ -100,8 +130,8 @@ class TTSFileRenderConfig:
 @dataclass(slots=True)
 class VoxCPM2Config:
     python: str = field(default_factory=default_neural_tts_python)
-    model_path: str = "/home/re/src/TTS test/VoxCPM2/models/VoxCPM2"
-    reference_wav_path: str = "/home/re/src/TTS test/VoxCPM2/Reference/Nata.wav"
+    model_path: str = field(default_factory=default_voxcpm2_model_path)
+    reference_wav_path: str = field(default_factory=default_voxcpm2_reference_wav_path)
     prompt_text: str = ""
     device: str = "cuda"
     optimize: bool = True
@@ -117,18 +147,15 @@ class VoxCPM2Config:
 @dataclass(slots=True)
 class CosyVoice3Config:
     python: str = field(default_factory=default_neural_tts_python)
-    repo_path: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice"
-    model_path: str = (
-        "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/CosyVoice/"
-        "pretrained_models/Fun-CosyVoice3-0.5B"
-    )
-    prompt_wav_path: str = "/home/re/src/TTS test/Fun‑CosyVoice 3 0.5B/Reference/Nata.wav"
+    repo_path: str = field(default_factory=default_cosyvoice3_repo_path)
+    model_path: str = field(default_factory=default_cosyvoice3_model_path)
+    prompt_wav_path: str = field(default_factory=default_cosyvoice3_prompt_wav_path)
     prompt_text: str = ""
     device: str = "cuda"
     local_files_only: bool = True
     fp16: bool = True
     load_trt: bool = False
-    wetext_path: str = "/home/re/.cache/modelscope/hub/pengzhendong/wetext"
+    wetext_path: str = field(default_factory=default_cosyvoice3_wetext_path)
     warmup: bool = True
     speed: float = 1.0
     enable_vocal_events: bool = False
@@ -599,8 +626,8 @@ def _normalize_voxcpm2_config(config: VoxCPM2Config) -> VoxCPM2Config:
     return replace(
         config,
         python=str(config.python or "").strip() or default_neural_tts_python(),
-        model_path=str(config.model_path or "").strip(),
-        reference_wav_path=str(config.reference_wav_path or "").strip(),
+        model_path=_normalize_project_path(config.model_path),
+        reference_wav_path=_normalize_project_path(config.reference_wav_path),
         prompt_text=str(config.prompt_text or "").strip(),
         device=str(config.device or "cuda").strip().casefold() or "cuda",
         optimize=bool(config.optimize),
@@ -618,19 +645,29 @@ def _normalize_cosyvoice3_config(config: CosyVoice3Config) -> CosyVoice3Config:
     return replace(
         config,
         python=str(config.python or "").strip() or default_neural_tts_python(),
-        repo_path=str(config.repo_path or "").strip(),
-        model_path=str(config.model_path or "").strip(),
-        prompt_wav_path=str(config.prompt_wav_path or "").strip(),
+        repo_path=_normalize_project_path(config.repo_path),
+        model_path=_normalize_project_path(config.model_path),
+        prompt_wav_path=_normalize_project_path(config.prompt_wav_path),
         prompt_text=str(config.prompt_text or "").strip(),
         device=str(config.device or "cuda").strip().casefold() or "cuda",
         local_files_only=bool(config.local_files_only),
         fp16=bool(config.fp16),
         load_trt=bool(config.load_trt),
-        wetext_path=str(config.wetext_path or "").strip(),
+        wetext_path=_normalize_project_path(config.wetext_path),
         warmup=bool(config.warmup),
         speed=max(0.5, min(2.0, float(config.speed))),
         enable_vocal_events=bool(config.enable_vocal_events),
     )
+
+
+def _normalize_project_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path.resolve())
 
 
 def _normalize_runtime_config(config: Any) -> Any:

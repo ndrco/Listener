@@ -75,11 +75,9 @@ For Whisper, either:
 - set `audio.stt.local_files_only=false` for the first model download;
 - or temporarily set `audio.stt.enabled=false` while testing the rest of the app.
 
-For Speaker, provide a Piper model `.onnx` file and make sure
-`speaker.piper.command` and `speaker.piper.model` point to real local paths.
-The repository config includes an example wired to a sibling `/home/re/src/Speaker`
-checkout; on another machine you should either replace those paths or disable
-Speaker for the first run:
+For Speaker, place a Piper model and its JSON sidecar at
+`models/ru_RU-irina-medium.onnx{,.json}`. The default command uses Piper from
+Listener's own `.venv`. If the model is not ready, disable Speaker for the first run:
 
 ```json
 {
@@ -97,7 +95,9 @@ pip install -r requirements-unified-cu128-py312.txt
 ```
 
 Both models keep their own persistent worker process but use Listener's Python
-environment by default. The complete installation, sizing, and rollback guide is
+environment by default. Put their assets under `models/tts/` and reference WAV
+files under `references/`; the default config needs no machine-specific TTS
+paths. The complete installation, sizing, and rollback guide is
 [docs/neural-tts.md](docs/neural-tts.md).
 
 If you want a self-contained Listener setup, use the Listener virtualenv as the

@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from speaker.config import SpeakerConfig, default_piper_model
+from speaker.config import PROJECT_ROOT, SpeakerConfig, default_piper_model
 
 
 class ConfigTests(unittest.TestCase):
@@ -19,6 +19,43 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.voxcpm2.python, sys.executable)
         self.assertEqual(config.cosyvoice3.python, sys.executable)
+
+    def test_neural_assets_default_to_project_directories(self):
+        config = SpeakerConfig()
+
+        self.assertEqual(
+            config.voxcpm2.model_path,
+            str(PROJECT_ROOT / "models" / "tts" / "voxcpm2" / "model"),
+        )
+        self.assertEqual(
+            config.voxcpm2.reference_wav_path,
+            str(PROJECT_ROOT / "references" / "voxcpm2" / "Nata.wav"),
+        )
+        self.assertEqual(
+            config.cosyvoice3.repo_path,
+            str(PROJECT_ROOT / "models" / "tts" / "cosyvoice3" / "CosyVoice"),
+        )
+        self.assertEqual(
+            config.cosyvoice3.wetext_path,
+            str(PROJECT_ROOT / "models" / "tts" / "cosyvoice3" / "wetext"),
+        )
+
+    def test_relative_neural_asset_paths_are_resolved_from_project_root(self):
+        config = SpeakerConfig().merge_dict(
+            {
+                "voxcpm2": {"model_path": "models/custom-vox"},
+                "cosyvoice3": {"repo_path": "models/custom-cosy"},
+            }
+        )
+
+        self.assertEqual(
+            config.voxcpm2.model_path,
+            str((PROJECT_ROOT / "models/custom-vox").resolve()),
+        )
+        self.assertEqual(
+            config.cosyvoice3.repo_path,
+            str((PROJECT_ROOT / "models/custom-cosy").resolve()),
+        )
 
     def test_blank_neural_worker_python_falls_back_to_listener_python(self):
         config = SpeakerConfig().merge_dict(
